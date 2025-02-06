@@ -1,0 +1,18 @@
+[project]
+name = "NeuroDiffusion"
+version = "0.1.0"
+authors = [
+  { name="Eric Yao", email="eric@synaptrix-labs.com" },
+]
+description = "Library for live and offline denoising of multi-channel EEG data powered by auto-encoders, created by Synaptrix Labs Inc."
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+license = "Apache-2.0"
+license-files = ["LICEN[CS]E*"]
+
+[project.urls]
+Homepage = "https://github.com/Synaptrix-Labs/NeuroDiffusion"
