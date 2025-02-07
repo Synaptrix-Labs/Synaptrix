@@ -39,7 +39,7 @@ def main(api_key="rinklybrain"):
                 api_key=api_key,
                 num_channels=4,
                 sample_rate=512,
-                output_format="array"
+                output_format="df"
             )
             
             print(f"Collected 512 samples => shape {np.shape(data_4x512)}. Ready to process.")
