@@ -401,6 +401,46 @@ def plot_denoised(
     plt.show()
 
     
+def find_rrmse(
+    eeg_segment,
+    api_key: str,
+    base_url: str = "http://localhost:8000",
+):
+    """
+    Find RRMSE for a segment of EEG data
+    
+    :param eeg_segment: array, list, or df
+    :param api_key: API key for authentication.
+    :param base_url: Base URL of the FastAPI server.
+    """
+    # Convert to list for JSON if needed
+    if isinstance(eeg_segment, np.ndarray):
+        eeg_segment_list = eeg_segment.tolist()
+    elif isinstance(eeg_segment, pd.DataFrame):
+        eeg_segment_list = eeg_segment[0].tolist()
+    else:
+        eeg_segment_list = eeg_segment
+    
+    try:
+        response = requests.post(
+            f"{base_url}/denoise-rrmse",
+            headers={
+                "x-api-key": api_key,
+                "Content-Type": "application/json"
+            },
+            json={
+                "noisy_eeg": eeg_segment_list
+            }
+        )
+
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Request failed: {e}")
+        
+    RRMSE = response.json()["rrmse"]
+    return print(f"The RRMSE of this segment is {RRMSE}")
+
+
 
 if __name__ == "__main__":
     
@@ -427,22 +467,27 @@ if __name__ == "__main__":
     # print(denoised_batch_data)
 
     # denoised_batch_data_multi = denoise_batch(
-    #     data_in= multi_channel_csv,
+    #     data_in= multi_channel_array,
     #     api_key=api_key,
     #     num_channels = 4,
     #     sample_rate=512,
-    #     output_format="csv",
+    #     output_format="array",
     #     file_name = "denoised_batch_multi.csv",
     # )
     # print("Denoised multichannel Batch data:")
     # print(denoised_batch_data_multi, np.shape(denoised_batch_data_multi))
     
-    plot = plot_denoised(
-        data_in= multi_channel_csv,
+    # plot = plot_denoised(
+    #     data_in= multi_channel_csv,
+    #     api_key=api_key,
+    #     num_channels = 4,
+    #     sample_rate=512,
+    #     initial_window_sec=0.5
+    # )
+    # print(plot)
+    
+    find_rrmse(
+        eeg_segment = single_segment_list,
         api_key=api_key,
-        num_channels = 4,
-        sample_rate=512,
-        initial_window_sec=0.5
     )
-    print(plot)
     
