@@ -1,6 +1,10 @@
 import numpy as np
 import requests
 import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.widgets import Button, TextBox
+import seaborn as sns
+
 from example_data import single_segment_list, single_segment_array, single_segment_df, multi_segment_list, multi_segment_array, multi_segment_df, multi_channel_list, multi_channel_array, multi_channel_df
 multi_segment_csv = "multi_segment.csv"
 multi_channel_csv = "multi_channel.csv"
@@ -93,7 +97,6 @@ def denoise_segment(
     return convert_output(denoised_array, num_channels = 1, output_format = output_format, file_name = file_name)
 
 
-
 def denoise_batch(
     data_in,
     api_key: str,
@@ -103,6 +106,17 @@ def denoise_batch(
     file_name: str = "denoised_batch.csv",
     base_url: str = "http://localhost:8000"
 ):
+    """
+    Denoise a multi channel and time series as long as you want.
+    
+    :param data_in: array, list, df, or csv
+    :param api_key: API key for authentication.
+    :num_channels: how many channels in the data
+    :sample_rate: how many data points per second
+    :param output_format: Desired output format: 'array', 'list', 'df', or 'csv'.
+    :param file_name: Used if output_format='csv'.
+    :param base_url: Base URL of the FastAPI server.
+    """
     windows = []
     if num_channels == 1:
         if isinstance(data_in, np.ndarray):
@@ -134,7 +148,7 @@ def denoise_batch(
             response = requests.post(
             "http://localhost:8000/batch-denoise",
                 headers={
-                    "x-api-key": "rinklybrain",
+                    "x-api-key": api_key,
                     "Content-Type": "application/json"
                 },
                 json={
@@ -188,7 +202,7 @@ def denoise_batch(
                 response = requests.post(
                 "http://localhost:8000/batch-denoise",
                     headers={
-                        "x-api-key": "rinklybrain",
+                        "x-api-key": api_key,
                         "Content-Type": "application/json"
                     },
                     json={
@@ -206,11 +220,192 @@ def denoise_batch(
             
         denoised_array = np.stack(denoised_array, axis=0) 
         return convert_output(denoised_array, num_channels = num_channels, output_format = output_format, file_name = file_name)
+
+sns.set_theme()
+
+def plot_denoised(
+    data_in, # shape (channels, samples)
+    api_key: str,
+    num_channels: int,
+    sample_rate: int = 512,
+    initial_window_sec: float = 2.0,
+    base_url: str = "http://localhost:8000"
+):
+    """
+    Create an interactive figure showing the clean and noisy time serives
+
+    :param data_in: array, list, df, or csv
+    :param api_key: for authenticating your API
+    :param num_channels: number of EEG channels
+    :param sample_rate: sampling rate in Hz
+    :param initial_window_sec: initial view window width in seconds
+    :param base_url: address of your FastAPI server
+    """
+    if isinstance(data_in, list):
+        data_in_array = np.array(data_in)
+    elif isinstance(data_in, pd.DataFrame):
+        data_in_array = np.array(data_in.values.T)
+    elif isinstance(data_in, str):
+        data_csv = pd.read_csv(data_in)
+        data_in_array = np.array(data_csv.values.T)
+    else:        
+        data_in_array = data_in
+    #Call denoise_batch
+    denoised_array = denoise_batch(
+        data_in=data_in,
+        api_key=api_key,
+        num_channels=num_channels,
+        sample_rate=sample_rate,
+        output_format="array",
+        base_url=base_url
+    )
+    channels, total_samples = denoised_array.shape
+    
+    # Ensure data_in_array has the same shape
+    assert data_in_array.shape == (channels, total_samples), (
+        "data_in_array shape must match the shape of denoised data."
+    )
+
+    # creat subplot for each channel
+    fig, axes = plt.subplots(nrows=channels, ncols=1, sharex=True, figsize=(10, 6))
+    if channels == 1:
+        axes = [axes]
+
+    fig.suptitle("NeuroDiffusion (Denoised & Noisy)", fontsize=14)
+    time = np.arange(total_samples) / sample_rate  # shape => (total_samples,)
+
+    # this tracks
+    # - current start index
+    # - current window width in samples
+    start_idx = 0
+    current_window_sec = initial_window_sec
+    window_samples = int(current_window_sec * sample_rate)
+    window_samples = min(window_samples, total_samples)
+
+    end_idx = start_idx + window_samples
+
+    # Plot lines for each channel
+    denoised_lines = []
+    noisy_lines = []
+    for ch in range(channels):
+        ax = axes[ch]
+
+        # Denoised line
+        den_line, = ax.plot(
+            time[start_idx:end_idx],
+            denoised_array[ch, start_idx:end_idx],
+            color="C0", lw=1.2, label="Denoised"
+        )
+        denoised_lines.append(den_line)
+
+        # Noisy line
+        noisy_line, = ax.plot(
+            time[start_idx:end_idx],
+            data_in_array[ch, start_idx:end_idx],
+            color="C1", lw=1.0, label="Noisy"
+        )
+        noisy_lines.append(noisy_line)
+
+        ax.set_ylabel(f"Channel {ch+1}")
+
+
+    axes[-1].set_xlabel("Time (sec)")
+    if end_idx > 0:
+        axes[-1].set_xlim(time[start_idx], time[end_idx-1])
+    else:
+        axes[-1].set_xlim(0, 0)
+
+    # toggle noisy lines on/off
+    show_noisy = False
+
+    # 5) Update function to redraw lines based on current window
+    def update_plot():
+        nonlocal start_idx, end_idx
+        end_idx = start_idx + window_samples
+        if end_idx > total_samples:
+            end_idx = total_samples
+            start_idx = end_idx - window_samples
+
+        for ch in range(channels):
+            # Denoised
+            denoised_lines[ch].set_xdata(time[start_idx:end_idx])
+            denoised_lines[ch].set_ydata(denoised_array[ch, start_idx:end_idx])
+
+            # Noisy
+            noisy_lines[ch].set_xdata(time[start_idx:end_idx])
+            noisy_lines[ch].set_ydata(data_in_array[ch, start_idx:end_idx])
+
+        if end_idx > 0:
+            axes[-1].set_xlim(time[start_idx], time[end_idx-1])
+        else:
+            axes[-1].set_xlim(0, 0)
+
+        fig.canvas.draw_idle()
+
+    # 6) Button callbacks (Left/Right):
+    def on_left(event):
+        nonlocal start_idx
+        step = window_samples // 2 if window_samples > 1 else 1
+        start_idx = max(0, start_idx - step)
+        update_plot()
+
+    def on_right(event):
+        nonlocal start_idx
+        step = window_samples // 2 if window_samples > 1 else 1
+        start_idx = min(start_idx + step, total_samples - window_samples)
+        update_plot()
+
+    # update window width
+    def on_window_change(text):
+        nonlocal current_window_sec, window_samples
+        try:
+            val = float(text)
+            if val <= 0:
+                return
+        except ValueError:
+            return
+        current_window_sec = val
+        window_samples = int(current_window_sec * sample_rate)
+        window_samples = max(1, min(window_samples, total_samples))
+        update_plot()
+
+    # show/hide noisy lines
+    def on_toggle_noisy(event):
+        nonlocal show_noisy
+        show_noisy = not show_noisy
+        for line in noisy_lines:
+            line.set_visible(show_noisy)
+        fig.canvas.draw_idle()
+
+    # Place the buttons & text box on the figure
+    ax_left = plt.axes([0.12, 0.01, 0.08, 0.05])
+    ax_right = plt.axes([0.23, 0.01, 0.08, 0.05])
+    ax_box = plt.axes([0.45, 0.01, 0.1, 0.05])
+    ax_toggle = plt.axes([0.65, 0.01, 0.12, 0.05])
+
+    btn_left = Button(ax_left, "Left")
+    btn_right = Button(ax_right, "Right")
+    text_box = TextBox(ax_box, "Window(sec):", initial=str(initial_window_sec))
+    btn_toggle = Button(ax_toggle, "Toggle Noisy")
+
+    # Link callbacks
+    btn_left.on_clicked(on_left)
+    btn_right.on_clicked(on_right)
+    text_box.on_submit(on_window_change)
+    btn_toggle.on_clicked(on_toggle_noisy)
+
+    for line in noisy_lines:
+        line.set_visible(show_noisy)
+
+    plt.tight_layout(rect=[0, 0.08, 1, 0.95])
+    plt.show()
+
     
 
 if __name__ == "__main__":
     
     api_key = "rinklybrain"
+    
     
     # denoised_single_data = denoise_segment(
     #     eeg_segment= single_segment_df, 
@@ -231,13 +426,23 @@ if __name__ == "__main__":
     # print("Denoised Batch data:")
     # print(denoised_batch_data)
 
-    denoised_batch_data_multi = denoise_batch(
+    # denoised_batch_data_multi = denoise_batch(
+    #     data_in= multi_channel_csv,
+    #     api_key=api_key,
+    #     num_channels = 4,
+    #     sample_rate=512,
+    #     output_format="csv",
+    #     file_name = "denoised_batch_multi.csv",
+    # )
+    # print("Denoised multichannel Batch data:")
+    # print(denoised_batch_data_multi, np.shape(denoised_batch_data_multi))
+    
+    plot = plot_denoised(
         data_in= multi_channel_csv,
         api_key=api_key,
         num_channels = 4,
         sample_rate=512,
-        output_format="csv",
-        file_name = "denoised_batch_multi.csv",
+        initial_window_sec=0.5
     )
-    print("Denoised multichannel Batch data:")
-    print(denoised_batch_data_multi, np.shape(denoised_batch_data_multi))
+    print(plot)
+    
