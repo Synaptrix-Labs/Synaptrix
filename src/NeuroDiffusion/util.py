@@ -9,15 +9,9 @@ import seaborn as sns
 from pylsl import StreamInlet, resolve_streams
 
 
-from example_data import single_segment_list, single_segment_array, single_segment_df, multi_segment_list, multi_segment_array, multi_segment_df, multi_channel_list, multi_channel_array, multi_channel_df
-multi_segment_csv = "multi_segment.csv"
-multi_channel_csv = "multi_channel.csv"
-
-api = "rinklybrain"
-bad_api = "smoothbrain"
 
 class SynaptrixClient:
-    def __init__(self, api_key: str, base_url: str = "http://localhost:8000"):
+    def __init__(self, api_key: str, base_url: str = "https://neurodiffusionapi.azurewebsites.net"):
         self.api_key = api_key
         self.base_url = base_url
 
@@ -73,8 +67,6 @@ class SynaptrixClient:
         Denoise a single 512-sample segment (single channel) using the remote API.
         
         :param eeg_segment: 1D numpy array of shape (512,) representing a single-channel EEG.
-        :param api_key: API key for authentication.
-        :param base_url: Base URL of the FastAPI server.
         :param output_format: Desired output format: 'array', 'list', 'df', or 'csv'.
         :param file_name: Used if output_format='csv'.
         """
@@ -117,12 +109,10 @@ class SynaptrixClient:
         Denoise a multi channel and time series as long as you want.
         
         :param data_in: array, list, df, or csv
-        :param api_key: API key for authentication.
         :num_channels: how many channels in the data
         :sample_rate: how many data points per second
         :param output_format: Desired output format: 'array', 'list', 'df', or 'csv'.
         :param file_name: Used if output_format='csv'.
-        :param base_url: Base URL of the FastAPI server.
         """
         windows = []
         if num_channels == 1:
@@ -241,11 +231,9 @@ class SynaptrixClient:
         Create an interactive figure showing the clean and noisy time serives
 
         :param data_in: array, list, df, or csv
-        :param api_key: for authenticating your API
         :param num_channels: number of EEG channels
         :param sample_rate: sampling rate in Hz
         :param initial_window_sec: initial view window width in seconds
-        :param base_url: address of your FastAPI server
         """
         if isinstance(data_in, list):
             data_in_array = np.array(data_in)
@@ -413,8 +401,6 @@ class SynaptrixClient:
         Find RRMSE for a segment of EEG data
         
         :param eeg_segment: array, list, or df
-        :param api_key: API key for authentication.
-        :param base_url: Base URL of the FastAPI server.
         """
         # Convert to list for JSON if needed
         if isinstance(eeg_segment, np.ndarray):
@@ -451,6 +437,16 @@ class SynaptrixClient:
         output_format = "array",
         file_name = "denoised_lsl.csv"
     ):
+        """
+        Use LSL to stream live data from eeg device into denoising endpoint
+        
+        :param stream_duration: How long the stream lasts in seconds, 0 means indefinite
+        :num_channels: how many channels in the data
+        :sample_rate: how many data points per second the eeg device outputs, for optimal results match the batch size of 512
+        :param output_format: Desired output format: 'array', 'list', 'df', or 'csv'.
+        :param file_name: Used if output_format='csv'.
+        """
+        
         batch_size = 512
         buffer_list = []
         denoised_chunks = []
@@ -508,62 +504,3 @@ class SynaptrixClient:
 
         # Convert to requested format
         return self.convert_output(final_array, num_channels = num_channels, output_format=output_format, file_name = file_name)
-
-if __name__ == "__main__":
-    
-    #api_key = "rinklybrain"
-    
-    
-    # denoised_single_data = denoise_segment(
-    #     eeg_segment= single_segment_df, 
-    #     api_key=api_key, 
-    #     output_format="csv"
-    # )
-    # print("Denoised Data:")
-    # print(denoised_single_data)
-    
-
-    # denoised_batch_data = denoise_batch(
-    #     data_in= multi_segment_csv,
-    #     api_key=api_key,
-    #     num_channels = 1,
-    #     sample_rate=512,
-    #     output_format="csv"
-    # )
-    # print("Denoised Batch data:")
-    # print(denoised_batch_data)
-
-    # denoised_batch_data_multi = denoise_batch(
-    #     data_in= multi_channel_array,
-    #     api_key=api_key,
-    #     num_channels = 4,
-    #     sample_rate=512,
-    #     output_format="array",
-    #     file_name = "denoised_batch_multi.csv",
-    # )
-    # print("Denoised multichannel Batch data:")
-    # print(denoised_batch_data_multi, np.shape(denoised_batch_data_multi))
-    
-    # plot = plot_denoised(
-    #     data_in= multi_channel_csv,
-    #     api_key=api_key,
-    #     num_channels = 4,
-    #     sample_rate=512,
-    #     initial_window_sec=0.5
-    # )
-    # print(plot)
-    
-    # find_rrmse(
-    #     eeg_segment = single_segment_list,
-    #     api_key=api_key,
-    # )
-    
-    lsl_output = lsl_denoise(
-        stream_duration = 0,
-        num_channels = 4,
-        sample_rate = 200,
-        output_format = "csv",
-        file_name = "lsl_test.csv"
-        )
-
-    print(lsl_output)
