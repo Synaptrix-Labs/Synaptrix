@@ -4,9 +4,18 @@ build-backend = "hatchling.build"
 
 [project]
 name = "synaptrix"
-version = "0.1.0"
+version = "1.0.0"
+dependencies = [
+  "matplotlib==3.10.0",
+  "numpy~=2.2",
+  "pandas==2.2.3",
+  "pylsl==1.17.6",
+  "requests==2.32.3",
+  "seaborn==0.13.2",
+]
 authors = [
-  { name="Eric Yao", email="eric@synaptrix-labs.com" },
+  { name = "Eric Yao", email = "eric@synaptrix-labs.com" },
+  { name = "Mofei Wang", email = "mofei.mw@gmail.com" }
 ]
 description = "Library for live and offline denoising of multi-channel EEG data powered by auto-encoders, created by Synaptrix Labs Inc."
 readme = "README.md"
@@ -20,26 +29,3 @@ license-files = ["LICEN[CS]E*"]
 
 [project.urls]
 Homepage = "https://github.com/Synaptrix-Labs/Synaptrix"
-
-[project.dependencies]
-certifi==2025.1.31
-charset-normalizer==3.4.1
-contourpy==1.3.1
-cycler==0.12.1
-fonttools==4.55.8
-idna==3.10
-kiwisolver==1.4.8
-matplotlib==3.10.0
-numpy==2.2.2
-packaging==24.2
-pandas==2.2.3
-pillow==11.1.0
-pylsl==1.17.6
-pyparsing==3.2.1
-python-dateutil==2.9.0.post0
-pytz==2025.1
-requests==2.32.3
-seaborn==0.13.2
-six==1.17.0
-tzdata==2025.1
-urllib3==2.3.0
