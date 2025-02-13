@@ -2,7 +2,7 @@
 
 A library for live and offline denoising of multi-channel EEG data powered by auto-encoders, created by Synaptrix Labs Inc. This README covers how to prepare **LabStreamingLayer (LSL)** for your platform, and how to install and initialize the `SynaptrixClient`.
 
----
+
 
 ## Table of Contents
 
@@ -16,13 +16,13 @@ A library for live and offline denoising of multi-channel EEG data powered by au
   - [Initialize `SynaptrixClient`](#initialize-synaptrixclient)
 - [License](#license)
 
----
+
 
 ## Overview
 
 **Synaptrix** provides a convenient Python API for EEG denoising using your own model or pre-trained models. It also integrates with **LabStreamingLayer (LSL)** for real-time data acquisition. To use LSL functionality, you must first install the **native** LSL libraries on your system (see [Prerequisites](#prerequisites)).
 
----
+
 
 ## Prerequisites
 
@@ -50,22 +50,22 @@ This installs the native LSL libraries that pylsl depends on.
     # Then follow build instructions from the official docs
     ```
 
----
+
 
 ## Installation
 
 After installing the native LSL libraries for your platform, you can install Synaptrix:
-    ```bash
+```bash
     pip install synaptrix
-    ```
+```
 
----
+
 
 ## Usage
 
 ### Initialize SynaptrixClient
 
-    ```python
+```python
     from synaptrix import SynaptrixClient
     import pandas as pd
 
@@ -73,34 +73,40 @@ After installing the native LSL libraries for your platform, you can install Syn
     client = SynaptrixClient(
         API_KEY="YourAPIKey"
     )
-    ```
+```
 
 After initializing the client, you can then access all the functions of synaptrix.
 
 Here is an example of how you can denoise a csv file called data.csv containing 4 channels of eeg data and output as a df:
     
-    ```python
+```python
     data_in = pd.read_csv("data.csv")
-    denoised = client.denoise_batch(data_in, num_channels=4, output_format="df") # output_format can be adjusted to "array", "list", "df, or "csv"
+    denoised = client.denoise_batch(data_in, num_channels=4, output_format="df") 
     print("Denoised Data: ", denoised)
-    ```
+    
+    # output_format can be adjusted to "array", "list", "df, or "csv"
+```
 Here is an example of how you can generate a plot of the denoised data:
     
-    ```python
+```python
     data_in = pd.read_csv("data.csv)
-    client.plot_denoised(data_in, num_channels=4, initial_window_sec=1) # initial_window_sec dictates how wide is the sliding window for viewing the plot
-    ```
+    client.plot_denoised(data_in, num_channels=4, initial_window_sec=1)
+    
+    # initial_window_sec dictates how wide is the sliding viewing window
+```
 Here is an exmaple of how to stream data through lsl into synaptrix and output denoised data:
 
-    ```python
+```python
     lsl_output = client.lsl_denoise(
         stream_duration = 10, # in seconds, change parameter to 0 for indefinite streaming
         num_channels = 4,
         sample_rate = 512, # adjust to match sampling rate of your device
         output_format = "csv",
-        file_name = "lsl_test.csv" # at the conclusion of the stream, all denoised data will be saved to this file
+        file_name = "lsl_test.csv" 
+        
+        # at the conclusion of the stream, all denoised data will be saved to this file
     )
-    ```
+```
 ---
 
 ## License
