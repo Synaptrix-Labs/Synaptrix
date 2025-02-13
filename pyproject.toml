@@ -6,12 +6,12 @@ build-backend = "hatchling.build"
 name = "synaptrix"
 version = "1.0.0"
 dependencies = [
-  "matplotlib==3.10.0",
-  "numpy~=2.2",
-  "pandas==2.2.3",
-  "pylsl==1.17.6",
-  "requests==2.32.3",
-  "seaborn==0.13.2",
+  "matplotlib~=3.7",
+  "numpy>=1.21, <=2.2.2",
+  "pandas~=2.2",
+  "pylsl~=1.17",
+  "requests~=2.3",
+  "seaborn~=0.13"
 ]
 authors = [
   { name = "Eric Yao", email = "eric@synaptrix-labs.com" },
