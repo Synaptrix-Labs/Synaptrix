@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "synaptrix"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
   "matplotlib~=3.7",
   "numpy>=1.21, <=2.2.2",
@@ -15,7 +15,9 @@ dependencies = [
 ]
 authors = [
   { name = "Eric Yao", email = "eric@synaptrix-labs.com" },
-  { name = "Mofei Wang", email = "mofei.mw@gmail.com" }
+  { name = "Mofei Wang", email = "mofei.mw@gmail.com" },
+  { name = "Rishi Arjun", email = "rishi.arjun2011@gmail.com"},
+  { name = "Mihir Bharti", email = "mihirbharti@ucsb.edu"}
 ]
 description = "Library for live and offline denoising of multi-channel EEG data powered by auto-encoders, created by Synaptrix Labs Inc."
 readme = "README.md"
