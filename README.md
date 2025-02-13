@@ -65,7 +65,7 @@ After installing the native LSL libraries for your platform, you can install Syn
 
 ### Initialize SynaptrixClient
 
-    ```py
+    ```python
     from synaptrix import SynaptrixClient
     import pandas as pd
 
@@ -79,20 +79,20 @@ After initializing the client, you can then access all the functions of synaptri
 
 Here is an example of how you can denoise a csv file called data.csv containing 4 channels of eeg data and output as a df:
     
-    ```py
+    ```python
     data_in = pd.read_csv("data.csv")
     denoised = client.denoise_batch(data_in, num_channels=4, output_format="df") # output_format can be adjusted to "array", "list", "df, or "csv"
     print("Denoised Data: ", denoised)
     ```
 Here is an example of how you can generate a plot of the denoised data:
     
-    ```py
+    ```python
     data_in = pd.read_csv("data.csv)
     client.plot_denoised(data_in, num_channels=4, initial_window_sec=1) # initial_window_sec dictates how wide is the sliding window for viewing the plot
     ```
 Here is an exmaple of how to stream data through lsl into synaptrix and output denoised data:
 
-    ```py
+    ```python
     lsl_output = client.lsl_denoise(
         stream_duration = 10, # in seconds, change parameter to 0 for indefinite streaming
         num_channels = 4,
