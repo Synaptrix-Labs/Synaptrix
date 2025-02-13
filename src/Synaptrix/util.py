@@ -11,8 +11,8 @@ from pylsl import StreamInlet, resolve_streams
 
 
 class SynaptrixClient:
-    def __init__(self, api_key: str, base_url: str = "https://neurodiffusionapi.azurewebsites.net"):
-        self.api_key = api_key
+    def __init__(self, API_KEY: str, base_url: str = "https://neurodiffusionapi.azurewebsites.net"):
+        self.API_KEY = API_KEY
         self.base_url = base_url
 
 
@@ -83,7 +83,7 @@ class SynaptrixClient:
             response = requests.post(
                 f"{self.base_url}/denoise",
                 headers={
-                    "x-api-key": self.api_key,
+                    "x-api-key": self.API_KEY,
                     "Content-Type": "application/json"
                 },
                 json={"noisy_eeg": eeg_segment_list}
@@ -145,7 +145,7 @@ class SynaptrixClient:
                 response = requests.post(
                 f"{self.base_url}/batch-denoise",
                     headers={
-                        "x-api-key": self.api_key,
+                        "x-api-key": self.API_KEY,
                         "Content-Type": "application/json"
                     },
                     json={
@@ -199,7 +199,7 @@ class SynaptrixClient:
                     response = requests.post(
                     f"{self.base_url}/batch-denoise",
                         headers={
-                            "x-api-key": self.api_key,
+                            "x-api-key": self.API_KEY,
                             "Content-Type": "application/json"
                         },
                         json={
@@ -414,7 +414,7 @@ class SynaptrixClient:
             response = requests.post(
                 f"{self.base_url}/denoise-rrmse",
                 headers={
-                    "x-api-key": self.api_key,
+                    "x-api-key": self.API_KEY,
                     "Content-Type": "application/json"
                 },
                 json={
