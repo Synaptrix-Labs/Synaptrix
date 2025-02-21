@@ -16,10 +16,71 @@ class SynaptrixClient:
         self.base_url = base_url
 
 
+    def reshape_data(self, data, data_columns=None, skip_rows=0, datetime_column=None):
+        """
+        Reshape input data into a nested list and extract a datetime column if provided.
+        
+        Parameters
+        ----------
+        data : np.ndarray, pd.DataFrame, list of lists, or str (path to CSV file)
+            The input EEG data.
+        data_columns : list of int, optional
+            Column indices to process. If None, all columns are processed.
+        skip_rows : int, optional
+            Number of rows to skip from the top of the data (default is 0).
+        datetime_column : int, optional
+            Column index that contains datetime data. If provided, that column is extracted 
+            separately.
+            
+        Returns
+        -------
+        reshaped_data : list of lists
+            A nested list with dimensions (len(data_columns), number of data points per column).
+        datetime_data : list or None
+            A list of datetime values if datetime_column is provided; otherwise, None.
+        """
+        # Load/convert data into a list of rows
+        if isinstance(data, str):
+            df = pd.read_csv(data, skiprows=skip_rows)
+            data_list = df.values.tolist()
+        elif isinstance(data, pd.DataFrame):
+            if skip_rows:
+                data = data.iloc[skip_rows:, :]
+            data_list = data.values.tolist()
+        elif isinstance(data, np.ndarray):
+            if skip_rows:
+                data = data[skip_rows:, :]
+            data_list = data.tolist()
+        elif isinstance(data, list):
+            # Assume it's already a list of lists (each inner list is a row)
+            data_list = data[skip_rows:]
+        else:
+            raise ValueError("Unsupported data type. Please use a numpy array, pandas DataFrame, list of lists, or CSV file path.")
+
+        if not data_list:
+            raise ValueError("No data available after applying skip_rows.")
+
+        # If no columns are specified, process all columns
+        if data_columns is None:
+            data_columns = list(range(len(data_list[0])))
+
+        datetime_data = None
+        if datetime_column is not None:
+            datetime_data = [row[datetime_column] for row in data_list]
+
+        # Build the nested list for the selected data columns
+        reshaped_data = []
+        for col in data_columns:
+            col_data = [row[col] for row in data_list]
+            reshaped_data.append(col_data)
+
+        return reshaped_data, datetime_data
+    
     def convert_output(
         self,
         data: np.ndarray,
-        num_channels: int = 1, 
+        num_channels: int = 1,
+        datetime = None, 
         output_format: str = "array", 
         file_name: str = "denoised.csv"
     ):
@@ -28,6 +89,8 @@ class SynaptrixClient:
         to the user-requested format: array, list, dataframe, or csv.
         
         - `data` is shape (channels, samples).
+        - `num_channels` is equal to number of channels user wanted to denoise
+        - `datetime` if exists is equal to the column containing datetime data
         - `output_format` can be "array", "list", "df", or "csv".
         - `file_name` can be used if you want to save CSV to disk. 
         """
@@ -40,20 +103,23 @@ class SynaptrixClient:
         elif output_format.lower() == "list":
             return data.tolist()
         
-        # df
-        elif output_format.lower() == "df":
+        # df and csv
+        elif output_format.lower() in ["df", "csv"]:
+            # Create channel names and transpose the data so that each row is a sample.
             columns = [f"channel_{i+1}" for i in range(num_channels)]
             data_T = data.T
             df = pd.DataFrame(data_T, columns=columns)
-            return df
-        
-        #csv
-        elif output_format.lower() == "csv":
-            columns = [f"channel_{i+1}" for i in range(num_channels)]
-            data_T = data.T
-            df = pd.DataFrame(data_T, columns=columns)
-            df.to_csv(file_name, index=False, header=True)
-            return file_name
+            
+            # If datetime is provided, insert it as the first column.
+            if datetime is not None:
+                df.insert(0, "datetime", datetime)
+            
+            if output_format.lower() == "df":
+                return df
+
+            elif output_format.lower() == "csv":
+                df.to_csv(file_name, index=False, header=True)
+                return file_name
         
 
 
@@ -100,8 +166,9 @@ class SynaptrixClient:
     def denoise_batch(
         self,
         data_in,
-        num_channels: int = 1,
-        sample_rate: int = 512,
+        data_columns = None,
+        skip_rows: int = 0,
+        datetime_column = None,
         output_format: str = "array",
         file_name: str = "denoised_batch.csv",
     ):
@@ -109,38 +176,37 @@ class SynaptrixClient:
         Denoise a multi channel and time series as long as you want.
         
         :param data_in: array, list, df, or csv
-        :num_channels: how many channels in the data
-        :sample_rate: how many data points per second
+        :param data_columns: an array of the indices of the columns that the user wants to denoise
+        :param skip_rows: an integer equaling to the number of rows off the top of the df or csv the user wants to skip
+        :param datetime_column: an integer equaling to the index of the column that contains datetime data, default None
         :param output_format: Desired output format: 'array', 'list', 'df', or 'csv'.
         :param file_name: Used if output_format='csv'.
         """
+        window_size = 512
         windows = []
-        if num_channels == 1:
-            if isinstance(data_in, np.ndarray):
-                data_in_list = data_in.tolist()
-            elif isinstance(data_in, pd.DataFrame):
-                data_in_list = data_in.iloc[:, 0].tolist()
-            elif isinstance(data_in, str):
-                data_csv = pd.read_csv(data_in)
-                data_in_list = data_csv.iloc[:, 0].tolist()
-            else:
-                data_in_list = data_in
+        data_in_list, datetime = self.reshape_data(data_in, data_columns, skip_rows, datetime_column)
+        
+        
+        #will store each denoised channel into this array
+        denoised_array = []
+        
+        #check if each channel is a multiple of sampling rate
+        data_in_length = np.shape(data_in_list)[1]
+        for chan in data_in_list:
+            windows = []
+            if data_in_length % window_size != 0:
+                caboose = data_in_length % window_size
+                chan = chan[:-caboose]
             
-            #if data is not divisible by sample rate trim data so that it is
-            data_in_length = len(data_in_list)
-            if data_in_length % sample_rate != 0:
-                caboose = data_in_length % sample_rate
-                data_in_list = data_in_list[:caboose]
-            
-            #pack data into nested list of dim (num seconds, data per second)    
-            num_windows = int(len(data_in_list) / sample_rate)
+            #chunk data from each channel by the sampling rate and append to windows
+            num_windows = int(data_in_length / window_size)
             for i in range(num_windows):
-                start = i * sample_rate
-                end = start + sample_rate
-                window = data_in_list[start:end]
+                start = i * window_size
+                end = start + window_size
+                window = chan[start:end]
                 windows.append(window)
-
-            #send to endpoint
+            
+            #send each channel into batch denoise
             try:
                 response = requests.post(
                 f"{self.base_url}/batch-denoise",
@@ -156,74 +222,23 @@ class SynaptrixClient:
                 
             except requests.exceptions.RequestException as e:
                 raise RuntimeError(f"Request failed: {e}")
-        
+            denoised_chan_list = response.json()["denoised_eeg_batch"]
+            flat_denoised_list = list(np.concatenate(denoised_chan_list))
+            denoised_chan = np.array(flat_denoised_list, dtype=np.float32)
+            denoised_array.append(denoised_chan)
             
-            denoised_list = response.json()["denoised_eeg_batch"] # dimensions(num of seconds, data per second)
-            print(np.shape(denoised_list))
-            flat_denoised_list = list(np.concatenate(denoised_list))
-            denoised_array = np.array(flat_denoised_list, dtype=np.float32)  # array of len (num of seconds * data per second)
-            return self.convert_output(denoised_array, num_channels = 1, output_format = output_format, file_name = file_name)
-        
-        else:
-            if isinstance(data_in, np.ndarray):
-                data_in_list = data_in.tolist()
-            elif isinstance(data_in, pd.DataFrame):
-                data_in_list = data_in.values.T.tolist()
-            elif isinstance(data_in, str):
-                data_csv = pd.read_csv(data_in)
-                data_in_list = data_csv.values.T.tolist()
-            else:
-                data_in_list = data_in
-            
-            #will store each denoised channel into this array
-            denoised_array = []
-            
-            #check if each channel is a multiple of sampling rate
-            data_in_length = np.shape(data_in_list)[1]
-            for chan in data_in_list:
-                windows = []
-                if data_in_length % sample_rate != 0:
-                    caboose = data_in_length % sample_rate
-                    chan = chan[:caboose]
-                
-                #chunk data from each channel by the sampling rate and append to windows
-                num_windows = int(data_in_length / sample_rate)
-                for i in range(num_windows):
-                    start = i * sample_rate
-                    end = start + sample_rate
-                    window = chan[start:end]
-                    windows.append(window)
-                
-                #send each channel into batch denoise
-                try:
-                    response = requests.post(
-                    f"{self.base_url}/batch-denoise",
-                        headers={
-                            "x-api-key": self.API_KEY,
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "noisy_eeg_batch": windows
-                        }
-                    )
-                    response.raise_for_status()
-                    
-                except requests.exceptions.RequestException as e:
-                    raise RuntimeError(f"Request failed: {e}")
-                denoised_chan_list = response.json()["denoised_eeg_batch"]
-                flat_denoised_list = list(np.concatenate(denoised_chan_list))
-                denoised_chan = np.array(flat_denoised_list, dtype=np.float32)
-                denoised_array.append(denoised_chan)
-                
-            denoised_array = np.stack(denoised_array, axis=0) 
-            return self.convert_output(denoised_array, num_channels = num_channels, output_format = output_format, file_name = file_name)
+        denoised_array = np.stack(denoised_array, axis=0) 
+        if datetime:
+            datetime = datetime[:-caboose]
+        return self.convert_output(denoised_array, num_channels = np.shape(data_in_list)[0], datetime = datetime, output_format = output_format, file_name = file_name)
 
     sns.set_theme()
 
     def plot_denoised(
         self,
         data_in, # shape (channels, samples)
-        num_channels: int,
+        data_columns = None,
+        skip_rows: int = 0,
         sample_rate: int = 512,
         initial_window_sec: float = 2.0,
     ):
@@ -235,28 +250,23 @@ class SynaptrixClient:
         :param sample_rate: sampling rate in Hz
         :param initial_window_sec: initial view window width in seconds
         """
-        if isinstance(data_in, list):
-            data_in_array = np.array(data_in)
-        elif isinstance(data_in, pd.DataFrame):
-            data_in_array = np.array(data_in.values.T)
-        elif isinstance(data_in, str):
-            data_csv = pd.read_csv(data_in)
-            data_in_array = np.array(data_csv.values.T)
-        else:        
-            data_in_array = data_in
+        
+        #Reshape inputted noisy data
+        data_in_list, _ = self.reshape_data(
+            data = data_in,
+            data_columns=data_columns,
+            skip_rows=skip_rows,
+        )
+        data_in_array = np.array(data_in_list)
         #Call denoise_batch
         denoised_array = self.denoise_batch(
             data_in=data_in,
-            num_channels=num_channels,
-            sample_rate=sample_rate,
+            data_columns=data_columns,
+            skip_rows=skip_rows,
             output_format="array",
         )
         channels, total_samples = denoised_array.shape
         
-        # Ensure data_in_array has the same shape
-        assert data_in_array.shape == (channels, total_samples), (
-            "data_in_array shape must match the shape of denoised data."
-        )
 
         # creat subplot for each channel
         fig, axes = plt.subplots(nrows=channels, ncols=1, sharex=True, figsize=(10, 6))
@@ -504,3 +514,5 @@ class SynaptrixClient:
 
         # Convert to requested format
         return self.convert_output(final_array, num_channels = num_channels, output_format=output_format, file_name = file_name)
+
+
