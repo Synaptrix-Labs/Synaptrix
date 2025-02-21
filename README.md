@@ -94,7 +94,7 @@ Here is an example of how you can generate a plot of the denoised data:
     
     # initial_window_sec dictates how wide is the sliding viewing window
 ```
-Here is an exmaple of how to stream data through lsl into synaptrix and output denoised data:
+Here is an example of how to stream data through lsl into synaptrix and output denoised data:
 
 ```python
     lsl_output = client.lsl_denoise(
