@@ -77,15 +77,37 @@ After installing the native LSL libraries for your platform, you can install Syn
 
 After initializing the client, you can then access all the functions of synaptrix.
 
-Here is an example of how you can denoise a csv file called data.csv containing 4 channels of eeg data and output as a df:
+Our model works best with normalized data. If your data is not normalized don't worry! The library will denoise your data by default.
+
+Here is an example of how you can denoise a csv file called data.csv. Let's say the columns you want to denoise has indices [1,2,5,7], you want to skip the first 2 rows of data because they contain header data, the column with index 0 contains datetime data, and you want to output a df:
     
 ```python
     data_in = pd.read_csv("data.csv")
-    denoised = client.denoise_batch(data_in, num_channels=4, output_format="df") 
-    print("Denoised Data: ", denoised)
     
-    # output_format can be adjusted to "array", "list", "df, or "csv"
+    denoised = client.denoise_batch(
+        data_in,
+        data_columns=[1,2,5,7],
+        skip_rows=2,
+        datetime_column=0,
+        output_format="df") 
+    
+    print("Denoised Data: ", denoised)
 ```
+Now let's say you have a dataset that is already normalized. Set the normalize parameter to False first. Now let's say you want to denoise columns with indices [4,6,7], you want to skip no rows of data, the datetime column has index 3, and you want to output a csv called "denoised_data.csv":
+    
+```python
+    data_in = pd.read_csv("data.csv")
+    
+    client.denoise_batch(
+        data_in,
+        normalize=False,
+        data_columns=[4,6,7],
+        skip_rows=0,
+        datetime_column=3,
+        output_format="csv",
+        file_name="denoised_data.csv") 
+```
+
 Here is an example of how you can generate a plot of the denoised data:
     
 ```python

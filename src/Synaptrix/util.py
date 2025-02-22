@@ -16,65 +16,49 @@ class SynaptrixClient:
         self.base_url = base_url
 
 
-    def reshape_data(self, data, data_columns=None, skip_rows=0, datetime_column=None):
+    def reshape_data(self, data, normalize=True, data_columns=None, skip_rows=0, datetime_column=None):
         """
-        Reshape input data into a nested list and extract a datetime column if provided.
+        Internal helper to reshape input data into a nested list, normalize, 
+        and extract a datetime column if provided.
         
-        Parameters
-        ----------
-        data : np.ndarray, pd.DataFrame, list of lists, or str (path to CSV file)
-            The input EEG data.
-        data_columns : list of int, optional
-            Column indices to process. If None, all columns are processed.
-        skip_rows : int, optional
-            Number of rows to skip from the top of the data (default is 0).
-        datetime_column : int, optional
-            Column index that contains datetime data. If provided, that column is extracted 
-            separately.
-            
-        Returns
-        -------
-        reshaped_data : list of lists
-            A nested list with dimensions (len(data_columns), number of data points per column).
-        datetime_data : list or None
-            A list of datetime values if datetime_column is provided; otherwise, None.
         """
         # Load/convert data into a list of rows
         if isinstance(data, str):
             df = pd.read_csv(data, skiprows=skip_rows)
-            data_list = df.values.tolist()
         elif isinstance(data, pd.DataFrame):
-            if skip_rows:
-                data = data.iloc[skip_rows:, :]
-            data_list = data.values.tolist()
+            df = data.iloc[skip_rows:] if skip_rows else data
         elif isinstance(data, np.ndarray):
+            df = pd.DataFrame(data)
             if skip_rows:
-                data = data[skip_rows:, :]
-            data_list = data.tolist()
+                df = df.iloc[skip_rows:]
         elif isinstance(data, list):
-            # Assume it's already a list of lists (each inner list is a row)
-            data_list = data[skip_rows:]
+            df = pd.DataFrame(data[skip_rows:])
         else:
-            raise ValueError("Unsupported data type. Please use a numpy array, pandas DataFrame, list of lists, or CSV file path.")
+            raise ValueError("Unsupported data type. Use a numpy array, pandas DataFrame, list of lists, or CSV file path.")
 
-        if not data_list:
-            raise ValueError("No data available after applying skip_rows.")
-
-        # If no columns are specified, process all columns
+        # Determine columns to process
         if data_columns is None:
-            data_columns = list(range(len(data_list[0])))
-
+            data_columns = list(range(df.shape[1]))
+        # Remove datetime column from numeric processing, if provided.
         datetime_data = None
         if datetime_column is not None:
-            datetime_data = [row[datetime_column] for row in data_list]
+            datetime_data = df.iloc[:, datetime_column].values
+            if datetime_column in data_columns:
+                data_columns.remove(datetime_column)
 
-        # Build the nested list for the selected data columns
-        reshaped_data = []
-        for col in data_columns:
-            col_data = [row[col] for row in data_list]
-            reshaped_data.append(col_data)
+        # Select the numeric data and convert to a NumPy array (float conversion)
+        numeric_data = df.iloc[:, data_columns].to_numpy(dtype=float)
 
-        return reshaped_data, datetime_data
+        # Apply vectorized normalization if requested
+        if normalize:
+            means = np.mean(numeric_data, axis=0)
+            stds = np.std(numeric_data, axis=0)
+            # Avoid division by zero
+            stds[stds == 0] = 1
+            numeric_data = (numeric_data - means) / stds
+
+        # Return with shape (num_points, num_channels)
+        return numeric_data.T, datetime_data
     
     def convert_output(
         self,
@@ -166,6 +150,7 @@ class SynaptrixClient:
     def denoise_batch(
         self,
         data_in,
+        normalize: bool = True,
         data_columns = None,
         skip_rows: int = 0,
         datetime_column = None,
@@ -182,61 +167,54 @@ class SynaptrixClient:
         :param output_format: Desired output format: 'array', 'list', 'df', or 'csv'.
         :param file_name: Used if output_format='csv'.
         """
+        data_in_array, datetime_data = self.reshape_data(data_in, normalize, data_columns, skip_rows, datetime_column)
+        # data_in_array shape: (channels, samples)
         window_size = 512
-        windows = []
-        data_in_list, datetime = self.reshape_data(data_in, data_columns, skip_rows, datetime_column)
+        num_channels, total_samples = data_in_array.shape
+        # Remove extra samples if needed
+        caboose = total_samples % window_size
+        if caboose:
+            data_in_array = data_in_array[:, :-caboose]
+            if datetime_data is not None:
+                datetime_data = datetime_data[:-caboose]
         
-        
-        #will store each denoised channel into this array
-        denoised_array = []
-        
-        #check if each channel is a multiple of sampling rate
-        data_in_length = np.shape(data_in_list)[1]
-        for chan in data_in_list:
-            windows = []
-            if data_in_length % window_size != 0:
-                caboose = data_in_length % window_size
-                chan = chan[:-caboose]
+        # Reshape each channel into windows (vectorized)
+        denoised_channels = []
+        for chan in data_in_array:
+            # Reshape channel into windows of shape (num_windows, window_size)
+            num_windows = chan.size // window_size
+            windows = chan.reshape(num_windows, window_size)
+            # Convert windows to list for JSON
+            windows_list = windows.tolist()
             
-            #chunk data from each channel by the sampling rate and append to windows
-            num_windows = int(data_in_length / window_size)
-            for i in range(num_windows):
-                start = i * window_size
-                end = start + window_size
-                window = chan[start:end]
-                windows.append(window)
-            
-            #send each channel into batch denoise
             try:
                 response = requests.post(
-                f"{self.base_url}/batch-denoise",
+                    f"{self.base_url}/batch-denoise",
                     headers={
                         "x-api-key": self.API_KEY,
                         "Content-Type": "application/json"
                     },
-                    json={
-                        "noisy_eeg_batch": windows
-                    }
+                    json={"noisy_eeg_batch": windows_list}
                 )
                 response.raise_for_status()
-                
             except requests.exceptions.RequestException as e:
                 raise RuntimeError(f"Request failed: {e}")
-            denoised_chan_list = response.json()["denoised_eeg_batch"]
-            flat_denoised_list = list(np.concatenate(denoised_chan_list))
-            denoised_chan = np.array(flat_denoised_list, dtype=np.float32)
-            denoised_array.append(denoised_chan)
             
-        denoised_array = np.stack(denoised_array, axis=0) 
-        if datetime:
-            datetime = datetime[:-caboose]
-        return self.convert_output(denoised_array, num_channels = np.shape(data_in_list)[0], datetime = datetime, output_format = output_format, file_name = file_name)
+            denoised_chan_list = response.json().get("denoised_eeg_batch", [])
+            if not denoised_chan_list:
+                raise ValueError("Received empty denoised channel list from the API.")
+            flat_denoised = np.concatenate(denoised_chan_list)
+            denoised_channels.append(flat_denoised.astype(np.float32))
+        
+        denoised_array = np.stack(denoised_channels, axis=0)
+        return self.convert_output(denoised_array, num_channels = denoised_array.shape[0], datetime = datetime_data, output_format = output_format, file_name = file_name)
 
     sns.set_theme()
 
     def plot_denoised(
         self,
         data_in, # shape (channels, samples)
+        normalize: bool = True,
         data_columns = None,
         skip_rows: int = 0,
         sample_rate: int = 512,
@@ -246,7 +224,9 @@ class SynaptrixClient:
         Create an interactive figure showing the clean and noisy time serives
 
         :param data_in: array, list, df, or csv
-        :param num_channels: number of EEG channels
+        :param normalize: bool, default True. If True, each channel will be normalized (z-score) before chunking.
+        :param data_columns: an array of the indices of the columns that the user wants to denoise
+        :param skip_rows: an integer equaling to the number of rows off the top of the df or csv the user wants to skip
         :param sample_rate: sampling rate in Hz
         :param initial_window_sec: initial view window width in seconds
         """
@@ -254,6 +234,7 @@ class SynaptrixClient:
         #Reshape inputted noisy data
         data_in_list, _ = self.reshape_data(
             data = data_in,
+            normalize=normalize,
             data_columns=data_columns,
             skip_rows=skip_rows,
         )
@@ -261,6 +242,7 @@ class SynaptrixClient:
         #Call denoise_batch
         denoised_array = self.denoise_batch(
             data_in=data_in,
+            normalize=normalize,
             data_columns=data_columns,
             skip_rows=skip_rows,
             output_format="array",
@@ -441,6 +423,7 @@ class SynaptrixClient:
 
     def lsl_denoise(
         self,
+        normalize: bool=True,
         stream_duration = 0,
         num_channels = 4,
         sample_rate = 512,
@@ -484,14 +467,14 @@ class SynaptrixClient:
                     data_512 = buffer_list[:batch_size]
                     buffer_list = buffer_list[batch_size:]
                     
-                    data_in = np.array(data_512, dtype=np.float32).T  # shape => (4,512)
+                    data_in = np.array(data_512, dtype=np.float32)  # shape => (512,num_channels)
                     print(f"Collected 512 samples => shape {np.shape(data_in)}. Ready to process.")
                     
+
                     # pass into denoise_batch
                     denoised_data = self.denoise_batch(
                         data_in=data_in,
-                        num_channels = num_channels,
-                        sample_rate=512,
+                        normalize=normalize,
                         output_format = "array"
                     )
                     print("denoised data")
