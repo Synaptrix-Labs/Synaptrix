@@ -27,12 +27,16 @@ class SynaptrixClient:
             df = pd.read_csv(data, skiprows=skip_rows)
         elif isinstance(data, pd.DataFrame):
             df = data.iloc[skip_rows:] if skip_rows else data
+            
         elif isinstance(data, np.ndarray):
-            df = pd.DataFrame(data)
+            df = pd.DataFrame(data.T)
+            print(df.head())
             if skip_rows:
                 df = df.iloc[skip_rows:]
         elif isinstance(data, list):
-            df = pd.DataFrame(data[skip_rows:])
+            data_rotated = list(map(list, zip(*data)))
+            df = pd.DataFrame(data_rotated[skip_rows:])
+            print(df.head())
         else:
             raise ValueError("Unsupported data type. Use a numpy array, pandas DataFrame, list of lists, or CSV file path.")
 
@@ -58,6 +62,7 @@ class SynaptrixClient:
             numeric_data = (numeric_data - means) / stds
 
         # Return with shape (num_points, num_channels)
+        #print(numeric_data)
         return numeric_data.T, datetime_data
     
     def convert_output(
@@ -168,9 +173,10 @@ class SynaptrixClient:
         :param file_name: Used if output_format='csv'.
         """
         data_in_array, datetime_data = self.reshape_data(data_in, normalize, data_columns, skip_rows, datetime_column)
-        # data_in_array shape: (channels, samples)
+        #data_in_array shape: (channels, samples)
         window_size = 512
         num_channels, total_samples = data_in_array.shape
+        
         # Remove extra samples if needed
         caboose = total_samples % window_size
         if caboose:
@@ -178,35 +184,54 @@ class SynaptrixClient:
             if datetime_data is not None:
                 datetime_data = datetime_data[:-caboose]
         
-        # Reshape each channel into windows (vectorized)
-        denoised_channels = []
-        for chan in data_in_array:
-            # Reshape channel into windows of shape (num_windows, window_size)
-            num_windows = chan.size // window_size
-            windows = chan.reshape(num_windows, window_size)
-            # Convert windows to list for JSON
-            windows_list = windows.tolist()
-            
+        # Calculate number of trials per channel
+        num_trials = data_in_array.shape[1] // window_size
+        #print(f"num chanels is {num_channels}")
+        # Format data into nested structure: [channels][trials][samples]
+        nested_data = []
+        for channel_idx in range(num_channels):
+            channel_data = data_in_array[channel_idx]
+            # Reshape into trials
+            channel_trials = channel_data.reshape(num_trials, window_size).tolist()
+            nested_data.append(channel_trials)
+        
+        #print(f"the shape of nested_data is {np.shape(nested_data)}")
+        try:
+            # Make a single API call with the nested structure
+            # The server expects "noisy_eeg_batch" as the key
+            response = requests.post(
+                f"{self.base_url}/batch-denoise",
+                headers={
+                    "x-api-key": self.API_KEY,
+                    "Content-Type": "application/json"
+                },
+                json={"noisy_eeg_batch": nested_data}
+            )
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            # Add more detailed error info
             try:
-                response = requests.post(
-                    f"{self.base_url}/batch-denoise",
-                    headers={
-                        "x-api-key": self.API_KEY,
-                        "Content-Type": "application/json"
-                    },
-                    json={"noisy_eeg_batch": windows_list}
-                )
-                response.raise_for_status()
-            except requests.exceptions.RequestException as e:
-                raise RuntimeError(f"Request failed: {e}")
-            
-            denoised_chan_list = response.json().get("denoised_eeg_batch", [])
-            if not denoised_chan_list:
-                raise ValueError("Received empty denoised channel list from the API.")
-            flat_denoised = np.concatenate(denoised_chan_list)
-            denoised_channels.append(flat_denoised.astype(np.float32))
+                error_details = response.json()
+                error_message = f"Request failed: {e}. Details: {error_details}"
+            except:
+                error_message = f"Request failed: {e}"
+            raise RuntimeError(error_message)
+        
+        # Process the response
+        denoised_nested = response.json().get("denoised_eeg_batch", [])
+        if not denoised_nested:
+            raise ValueError("Received empty denoised data from the API.")
+        
+        # Reassemble the nested response back to (channels, samples)
+        denoised_channels = []
+        for channel_data in denoised_nested:
+            # Flatten trials back into a single continuous signal
+            flat_channel = np.concatenate([np.array(trial) for trial in channel_data])
+            denoised_channels.append(flat_channel.astype(np.float32))
         
         denoised_array = np.stack(denoised_channels, axis=0)
+        spp_consumed = int(np.shape(nested_data)[0]*np.shape(nested_data)[1]*512)
+        print(f"This operation consumed {spp_consumed} SPP's")
         return self.convert_output(denoised_array, num_channels = denoised_array.shape[0], datetime = datetime_data, output_format = output_format, file_name = file_name)
 
     sns.set_theme()
@@ -467,7 +492,7 @@ class SynaptrixClient:
                     data_512 = buffer_list[:batch_size]
                     buffer_list = buffer_list[batch_size:]
                     
-                    data_in = np.array(data_512, dtype=np.float32)  # shape => (512,num_channels)
+                    data_in = np.array(data_512, dtype=np.float32).T  # shape => (512,num_channels)
                     print(f"Collected 512 samples => shape {np.shape(data_in)}. Ready to process.")
                     
 
@@ -494,8 +519,10 @@ class SynaptrixClient:
             final_array = np.concatenate(denoised_chunks, axis=1)  # => shape (num_channels, 512*N)
 
         print("Final shape:", final_array.shape)
+        total_spp = int(final_array.shape[0]* (final_array.shape[1]/512)*512)
 
         # Convert to requested format
+        print(f"This LSL stream consumed {total_spp} SPP's")
         return self.convert_output(final_array, num_channels = num_channels, output_format=output_format, file_name = file_name)
 
 
