@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, TextBox
 import seaborn as sns
 from pylsl import StreamInlet, resolve_streams
+from scipy import signal
 
 
 
@@ -16,6 +17,40 @@ class SynaptrixClient:
         self.base_url = base_url
 
 
+    def apply_notch_filter(self, data, fs, notch_freqs=[50, 60]):
+
+        filtered_data = data.copy()
+        
+        q_values = [30] * len(notch_freqs)
+        for freq, q in zip(notch_freqs, q_values):
+            b, a = signal.iirnotch(freq, q, fs)
+            # Apply the filter to each channel
+            for i in range(data.shape[0]):
+                filtered_data[i] = signal.filtfilt(b, a, data[i])
+        
+        return filtered_data
+    
+    def apply_bandpass_filter(self, data, fs, low_freq=1, high_freq=100):
+        
+        filtered_data = np.zeros_like(data)
+        
+        nyq = 0.5 * fs
+        low = low_freq / nyq
+        high = high_freq / nyq
+        
+        b, a = signal.butter(4, [low, high], btype='band')        
+        # Apply the filter to each channel
+        for i in range(data.shape[0]):
+            filtered_data[i] = signal.filtfilt(b, a, data[i])
+        
+        return filtered_data
+        
+    def filter_data(self, data, fs, notch_freqs=[50,60], low_freq=1, high_freq=100):
+        filtered_data = self.apply_notch_filter(data, fs, notch_freqs)
+        filtered_data = self.apply_bandpass_filter(filtered_data, fs, low_freq, high_freq)
+        
+        return filtered_data
+        
     def reshape_data(self, data, normalize=True, data_columns=None, skip_rows=0, datetime_column=None):
         """
         Internal helper to reshape input data into a nested list, normalize, 
@@ -25,18 +60,19 @@ class SynaptrixClient:
         # Load/convert data into a list of rows
         if isinstance(data, str):
             df = pd.read_csv(data, skiprows=skip_rows)
+            
         elif isinstance(data, pd.DataFrame):
             df = data.iloc[skip_rows:] if skip_rows else data
             
         elif isinstance(data, np.ndarray):
             df = pd.DataFrame(data.T)
-            print(df.head())
             if skip_rows:
                 df = df.iloc[skip_rows:]
+                
         elif isinstance(data, list):
             data_rotated = list(map(list, zip(*data)))
             df = pd.DataFrame(data_rotated[skip_rows:])
-            print(df.head())
+            
         else:
             raise ValueError("Unsupported data type. Use a numpy array, pandas DataFrame, list of lists, or CSV file path.")
 
@@ -109,47 +145,6 @@ class SynaptrixClient:
             elif output_format.lower() == "csv":
                 df.to_csv(file_name, index=False, header=True)
                 return file_name
-        
-
-
-    def denoise_segment(
-        self,
-        eeg_segment: np.ndarray, 
-        output_format: str = "array",
-        file_name: str = "denoised.csv"
-    ):
-        """
-        Denoise a single 512-sample segment (single channel) using the remote API.
-        
-        :param eeg_segment: 1D numpy array of shape (512,) representing a single-channel EEG.
-        :param output_format: Desired output format: 'array', 'list', 'df', or 'csv'.
-        :param file_name: Used if output_format='csv'.
-        """
-        # Convert to list for JSON if needed
-        if isinstance(eeg_segment, np.ndarray):
-            eeg_segment_list = eeg_segment.tolist()
-        elif isinstance(eeg_segment, pd.DataFrame):
-            eeg_segment_list = eeg_segment[0].tolist()
-        else:
-            eeg_segment_list = eeg_segment
-        
-        
-        try:
-            response = requests.post(
-                f"{self.base_url}/denoise",
-                headers={
-                    "x-api-key": self.API_KEY,
-                    "Content-Type": "application/json"
-                },
-                json={"noisy_eeg": eeg_segment_list}
-            )
-            response.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"Request failed: {e}")
-        
-        denoised_list = response.json()["denoised_eeg"]
-        denoised_array = np.array(denoised_list, dtype=np.float32)
-        return self.convert_output(denoised_array, num_channels = 1, output_format = output_format, file_name = file_name)
 
 
     def denoise_batch(
@@ -159,6 +154,11 @@ class SynaptrixClient:
         data_columns = None,
         skip_rows: int = 0,
         datetime_column = None,
+        filter: bool = True,
+        sample_rate: int = 512,
+        notch_freqs: list = [60],
+        low_freq: int = 1,
+        high_freq: int = 100,
         output_format: str = "array",
         file_name: str = "denoised_batch.csv",
     ):
@@ -166,14 +166,43 @@ class SynaptrixClient:
         Denoise a multi channel and time series as long as you want.
         
         :param data_in: array, list, df, or csv
+        :param normalize: bool, default True. If True, each channel will be normalized (z-score) before chunking.
         :param data_columns: an array of the indices of the columns that the user wants to denoise
         :param skip_rows: an integer equaling to the number of rows off the top of the df or csv the user wants to skip
         :param datetime_column: an integer equaling to the index of the column that contains datetime data, default None
+        :param filter: set this parameter to False if your input data is already filtered, default is True
+        :param sample_rate: an integer equaling to the sample rate of your data
+        :param notch_freqs: a list of integers equaling to which hz you want to apply a notch filter
+        :param low_freq: an integer equaling to the lower bound of the bandpass filter
+        :param high_freq: an integer equaling to the higher bound of teh bandpass filter
         :param output_format: Desired output format: 'array', 'list', 'df', or 'csv'.
         :param file_name: Used if output_format='csv'.
         """
-        data_in_array, datetime_data = self.reshape_data(data_in, normalize, data_columns, skip_rows, datetime_column)
+        
         #data_in_array shape: (channels, samples)
+        if normalize:
+            if filter:
+                print("Filtering Data")
+                print()
+                reshaped_data_in, datetime_data = self.reshape_data(data=data_in, normalize=False, data_columns=data_columns, skip_rows=skip_rows, datetime_column=datetime_column)
+                data_in_array = self.filter_data(reshaped_data_in, fs=sample_rate, notch_freqs=notch_freqs, low_freq=low_freq, high_freq=high_freq)
+                filtered_data_in = pd.DataFrame(data_in_array.T)
+                data_in_array, _ = self.reshape_data(data=filtered_data_in, normalize=True)
+            else:
+                data_in_array, datetime_data = self.reshape_data(data=data_in, normalize=normalize, data_columns=data_columns, skip_rows=skip_rows, datetime_column=datetime_column)
+        else:
+            print("NORMALIZATION IS OFF")
+            if filter:
+                print("Filtering Data")
+                print()
+                reshaped_data_in, datetime_data = self.reshape_data(data=data_in, normalize=normalize, data_columns=data_columns, skip_rows=skip_rows, datetime_column=datetime_column)
+                data_in_array = self.filter_data(reshaped_data_in, fs=sample_rate, notch_freqs=notch_freqs, low_freq=low_freq, high_freq=high_freq)
+                filtered_data_in = pd.DataFrame(data_in_array.T)
+                data_in_array, _ = self.reshape_data(data=filtered_data_in, normalize=normalize)
+            else:
+                data_in_array, datetime_data = self.reshape_data(data=data_in, normalize=normalize, data_columns=data_columns, skip_rows=skip_rows, datetime_column=datetime_column)
+                
+                
         window_size = 512
         num_channels, total_samples = data_in_array.shape
         
@@ -186,7 +215,6 @@ class SynaptrixClient:
         
         # Calculate number of trials per channel
         num_trials = data_in_array.shape[1] // window_size
-        #print(f"num chanels is {num_channels}")
         # Format data into nested structure: [channels][trials][samples]
         nested_data = []
         for channel_idx in range(num_channels):
@@ -195,10 +223,11 @@ class SynaptrixClient:
             channel_trials = channel_data.reshape(num_trials, window_size).tolist()
             nested_data.append(channel_trials)
         
-        #print(f"the shape of nested_data is {np.shape(nested_data)}")
         try:
             # Make a single API call with the nested structure
             # The server expects "noisy_eeg_batch" as the key
+            print("Denoising Data")
+            print()
             response = requests.post(
                 f"{self.base_url}/batch-denoise",
                 headers={
@@ -242,7 +271,11 @@ class SynaptrixClient:
         normalize: bool = True,
         data_columns = None,
         skip_rows: int = 0,
+        filter = True,
         sample_rate: int = 512,
+        notch_freqs: list = [60],
+        low_freq: int = 1,
+        high_freq: int = 100,
         initial_window_sec: float = 2.0,
     ):
         """
@@ -252,26 +285,74 @@ class SynaptrixClient:
         :param normalize: bool, default True. If True, each channel will be normalized (z-score) before chunking.
         :param data_columns: an array of the indices of the columns that the user wants to denoise
         :param skip_rows: an integer equaling to the number of rows off the top of the df or csv the user wants to skip
-        :param sample_rate: sampling rate in Hz
+        :param filter: set this parameter to False if your input data is already filtered, default is True
+        :param sample_rate: an integer equaling to the sample rate of your data
+        :param notch_freqs: a list of integers equaling to which hz you want to apply a notch filter
+        :param low_freq: an integer equaling to the lower bound of the bandpass filter
+        :param high_freq: an integer equaling to the higher bound of teh bandpass filter
         :param initial_window_sec: initial view window width in seconds
         """
         
-        #Reshape inputted noisy data
-        data_in_list, _ = self.reshape_data(
-            data = data_in,
-            normalize=normalize,
-            data_columns=data_columns,
-            skip_rows=skip_rows,
-        )
-        data_in_array = np.array(data_in_list)
-        #Call denoise_batch
+        if normalize:
+            if filter:
+                data_in_list, _ = self.reshape_data(
+                    data = data_in,
+                    normalize=False,
+                    data_columns=data_columns,
+                    skip_rows=skip_rows,
+                )
+                prefilter_data_in_array = np.array(data_in_list)
+                data_in_array = self.filter_data(prefilter_data_in_array, fs=sample_rate, notch_freqs=notch_freqs, low_freq=low_freq, high_freq=high_freq)
+                data_in_array, _ = self.reshape_data(data=data_in_array, normalize=True)
+                                
+            
+            else:
+                data_in_list, _ = self.reshape_data(
+                    data = data_in,
+                    normalize=normalize,
+                    data_columns=data_columns,
+                    skip_rows=skip_rows,
+                )
+                data_in_array = np.array(data_in_list)
+            
+        else:
+            print("NORMALIZATION IS OFF")
+            if filter:
+                data_in_list, _ = self.reshape_data(
+                    data = data_in,
+                    normalize=normalize,
+                    data_columns=data_columns,
+                    skip_rows=skip_rows,
+                )
+                prefilter_data_in_array = np.array(data_in_list)
+                data_in_array = self.filter_data(prefilter_data_in_array, fs=sample_rate, notch_freqs=notch_freqs, low_freq=low_freq, high_freq=high_freq)
+                data_in_array, _ = self.reshape_data(data=data_in_array, normalize=False)
+                                
+            
+            else:
+                data_in_list, _ = self.reshape_data(
+                    data = data_in,
+                    normalize=normalize,
+                    data_columns=data_columns,
+                    skip_rows=skip_rows,
+                )
+                data_in_array = np.array(data_in_list)
+                
+                
         denoised_array = self.denoise_batch(
             data_in=data_in,
             normalize=normalize,
             data_columns=data_columns,
             skip_rows=skip_rows,
+            filter = filter,
+            sample_rate = sample_rate,
+            notch_freqs = notch_freqs,
+            low_freq = low_freq,
+            high_freq = high_freq,
             output_format="array",
         )
+        
+                
         channels, total_samples = denoised_array.shape
         
 
@@ -327,7 +408,7 @@ class SynaptrixClient:
         # toggle noisy lines on/off
         show_noisy = False
 
-        # 5) Update function to redraw lines based on current window
+        # Update function to redraw lines based on current window
         def update_plot():
             nonlocal start_idx, end_idx
             end_idx = start_idx + window_samples
@@ -351,7 +432,7 @@ class SynaptrixClient:
 
             fig.canvas.draw_idle()
 
-        # 6) Button callbacks (Left/Right):
+        # Button callbacks (Left/Right):
         def on_left(event):
             nonlocal start_idx
             step = window_samples // 2 if window_samples > 1 else 1
@@ -452,15 +533,25 @@ class SynaptrixClient:
         stream_duration = 0,
         num_channels = 4,
         sample_rate = 512,
+        filter = True,
+        notch_freqs=[50,60],
+        low_freq: int = 1,
+        high_freq: int = 100,
         output_format = "array",
         file_name = "denoised_lsl.csv"
     ):
         """
         Use LSL to stream live data from eeg device into denoising endpoint
         
+        :param normalize: bool, default True. If True, each channel will be normalized (z-score) before chunking.
         :param stream_duration: How long the stream lasts in seconds, 0 means indefinite
         :num_channels: how many channels in the data
         :sample_rate: how many data points per second the eeg device outputs, for optimal results match the batch size of 512
+        :param filter: set this parameter to False if your input data is already filtered, default is True
+        :param sample_rate: an integer equaling to the sample rate of your data
+        :param notch_freqs: a list of integers equaling to which hz you want to apply a notch filter
+        :param low_freq: an integer equaling to the lower bound of the bandpass filter
+        :param high_freq: an integer equaling to the higher bound of teh bandpass filter
         :param output_format: Desired output format: 'array', 'list', 'df', or 'csv'.
         :param file_name: Used if output_format='csv'.
         """
@@ -500,6 +591,11 @@ class SynaptrixClient:
                     denoised_data = self.denoise_batch(
                         data_in=data_in,
                         normalize=normalize,
+                        filter=filter,
+                        sample_rate=sample_rate,
+                        notch_freqs=notch_freqs,
+                        low_freq=low_freq,
+                        high_freq=high_freq,
                         output_format = "array"
                     )
                     print("denoised data")
