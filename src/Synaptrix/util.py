@@ -12,7 +12,7 @@ from scipy import signal
 
 
 class SynaptrixClient:
-    def __init__(self, API_KEY: str, base_url: str = "https://neurodiffusionapi.azurewebsites.net"):
+    def __init__(self, API_KEY: str, base_url: str = "https://neurodiffusionapi-apim.azure-api.net"):
         self.API_KEY = API_KEY
         self.base_url = base_url
 
@@ -98,7 +98,6 @@ class SynaptrixClient:
             numeric_data = (numeric_data - means) / stds
 
         # Return with shape (num_points, num_channels)
-        #print(numeric_data)
         return numeric_data.T, datetime_data
     
     def convert_output(
@@ -120,15 +119,15 @@ class SynaptrixClient:
         - `file_name` can be used if you want to save CSV to disk. 
         """
         
-        # array
+        # Array output
         if output_format.lower() == "array":
             return data 
         
-        # list
+        # List output
         elif output_format.lower() == "list":
             return data.tolist()
         
-        # df and csv
+        # DF and CSV output
         elif output_format.lower() in ["df", "csv"]:
             # Create channel names and transpose the data so that each row is a sample.
             columns = [f"channel_{i+1}" for i in range(num_channels)]
@@ -179,7 +178,6 @@ class SynaptrixClient:
         :param file_name: Used if output_format='csv'.
         """
         
-        #data_in_array shape: (channels, samples)
         if normalize:
             if filter:
                 print("Filtering Data")
@@ -356,17 +354,14 @@ class SynaptrixClient:
         channels, total_samples = denoised_array.shape
         
 
-        # creat subplot for each channel
+        # Create subplot for each channel
         fig, axes = plt.subplots(nrows=channels, ncols=1, sharex=True, figsize=(10, 6))
         if channels == 1:
             axes = [axes]
 
         fig.suptitle("NeuroDiffusion (Denoised & Noisy)", fontsize=14)
-        time = np.arange(total_samples) / sample_rate  # shape => (total_samples,)
+        time = np.arange(total_samples) / sample_rate
 
-        # this tracks
-        # - current start index
-        # - current window width in samples
         start_idx = 0
         current_window_sec = initial_window_sec
         window_samples = int(current_window_sec * sample_rate)
@@ -405,7 +400,7 @@ class SynaptrixClient:
         else:
             axes[-1].set_xlim(0, 0)
 
-        # toggle noisy lines on/off
+        # Toggle noisy lines on/off
         show_noisy = False
 
         # Update function to redraw lines based on current window
@@ -445,7 +440,7 @@ class SynaptrixClient:
             start_idx = min(start_idx + step, total_samples - window_samples)
             update_plot()
 
-        # update window width
+        # Update window width
         def on_window_change(text):
             nonlocal current_window_sec, window_samples
             try:
@@ -459,7 +454,7 @@ class SynaptrixClient:
             window_samples = max(1, min(window_samples, total_samples))
             update_plot()
 
-        # show/hide noisy lines
+        # Show/hide noisy lines
         def on_toggle_noisy(event):
             nonlocal show_noisy
             show_noisy = not show_noisy
@@ -583,11 +578,11 @@ class SynaptrixClient:
                     data_512 = buffer_list[:batch_size]
                     buffer_list = buffer_list[batch_size:]
                     
-                    data_in = np.array(data_512, dtype=np.float32).T  # shape => (512,num_channels)
+                    data_in = np.array(data_512, dtype=np.float32).T
                     print(f"Collected 512 samples => shape {np.shape(data_in)}. Ready to process.")
                     
 
-                    # pass into denoise_batch
+                    # Pass into denoise_batch
                     denoised_data = self.denoise_batch(
                         data_in=data_in,
                         normalize=normalize,
@@ -612,7 +607,7 @@ class SynaptrixClient:
             print("No data was collected or denoised.")
             final_array = np.zeros((num_channels, 0), dtype=np.float32)
         else:
-            final_array = np.concatenate(denoised_chunks, axis=1)  # => shape (num_channels, 512*N)
+            final_array = np.concatenate(denoised_chunks, axis=1)
 
         print("Final shape:", final_array.shape)
         total_spp = int(final_array.shape[0]* (final_array.shape[1]/512)*512)
