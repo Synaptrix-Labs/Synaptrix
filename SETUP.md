@@ -10,7 +10,7 @@ Follow these steps to configure your local environment to work with both the pri
 
 ### 1️. Clone the Private Repository  
 
-Start by cloning the private repo:  
+Start by cloning the private repo and cd'ing into it:  
 
 ```sh
 git clone https://github.com/Synaptrix-Labs/Synaptrix-dev.git  
