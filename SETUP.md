@@ -13,8 +13,8 @@ Follow these steps to configure your local environment to work with both the pri
 Start by cloning the private repo:  
 
 ```sh
-git clone https://github.com/yourusername/private-repo.git  
-cd private-repo  
+git clone https://github.com/Synaptrix-Labs/Synaptrix-dev.git  
+cd Synaptrix-dev
 ```
 
 ### 2. Add the Public Repository as an Upstream Remote
@@ -22,7 +22,7 @@ cd private-repo
 Add the public repository as another remote:
 
 ```sh
-git remote add public https://github.com/username/public-repo.git
+git remote add public https://github.com/Synaptrix-Labs/Synaptrix.git
 ```
 
 Verify that the remotes are set up correctly:
@@ -32,11 +32,10 @@ git remote -v
 
 You should see output like this:
 ```sh
-origin  https://github.com/yourusername/private-repo.git (fetch)  
-origin  https://github.com/yourusername/private-repo.git (push)  
-public  https://github.com/username/public-repo.git (fetch)  
-public  https://github.com/username/public-repo.git (push)  
-
+origin	https://github.com/Synaptrix-Labs/Synaptrix-dev.git (fetch)
+origin	https://github.com/Synaptrix-Labs/Synaptrix-dev.git (push)
+public	https://github.com/Synaptrix-Labs/Synaptrix.git (fetch)
+public	https://github.com/Synaptrix-Labs/Synaptrix.git (push)
 ```
 
 ### 3. Dev Work
