@@ -8,6 +8,8 @@ from matplotlib.widgets import Button, TextBox
 import seaborn as sns
 from pylsl import StreamInlet, resolve_streams
 from scipy import signal
+import zstandard as zstd
+import pickle
 
 
 
@@ -145,6 +147,14 @@ class SynaptrixClient:
                 df.to_csv(file_name, index=False, header=True)
                 return file_name
 
+    def compress(self, eeg_array):
+        """Internal helper function to compress the NumPy array using Zstandard and return the byte stream"""
+        compressor = zstd.ZstdCompressor()
+        return compressor.compress(pickle.dumps(eeg_array))
+
+    def decompress(self, eeg_bytestream):
+        decompressor = zstd.ZstdDecompressor()
+        return pickle.loads(decompressor.decompress(eeg_bytestream))
 
     def denoise_batch(
         self,
@@ -221,6 +231,13 @@ class SynaptrixClient:
             channel_trials = channel_data.reshape(num_trials, window_size).tolist()
             nested_data.append(channel_trials)
         
+        # Compress nested_data before sending through API endpoint
+        compressed_nested_data = self.compress(nested_data)
+
+        # print(type(nested_data))
+        # print()
+        # print(compressed_nested_data)
+
         try:
             # Make a single API call with the nested structure
             # The server expects "noisy_eeg_batch" as the key
@@ -230,9 +247,11 @@ class SynaptrixClient:
                 f"{self.base_url}/batch-denoise",
                 headers={
                     "x-api-key": self.API_KEY,
-                    "Content-Type": "application/json"
+                    # "Content-Type": "application/json",
+                    "Content-Type": "application/octet-stream"
                 },
-                json={"noisy_eeg_batch": nested_data}
+                # json={"noisy_eeg_batch": compressed_nested_data}
+                data=compressed_nested_data
             )
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
@@ -245,9 +264,13 @@ class SynaptrixClient:
             raise RuntimeError(error_message)
         
         # Process the response
-        denoised_nested = response.json().get("denoised_eeg_batch", [])
-        if not denoised_nested:
+        # denoised_nested_bytestream = response.json().get("denoised_eeg_batch", [])
+        denoised_nested_bytestream = response.content
+        if not denoised_nested_bytestream:
             raise ValueError("Received empty denoised data from the API.")
+        
+        # Decompress the output from API call
+        denoised_nested = self.decompress(denoised_nested_bytestream)
         
         # Reassemble the nested response back to (channels, samples)
         denoised_channels = []
