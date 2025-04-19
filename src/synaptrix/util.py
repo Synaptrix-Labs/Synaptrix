@@ -20,6 +20,7 @@ class SynaptrixClient:
     def apply_notch_filter(self, data, fs, notch_freqs=[50, 60]):
 
         filtered_data = data.copy()
+        # print("filtered_data.shape:", filtered_data.shape)
         
         q_values = [30] * len(notch_freqs)
         for freq, q in zip(notch_freqs, q_values):
@@ -57,6 +58,8 @@ class SynaptrixClient:
         and extract a datetime column if provided.
         
         """
+        # print("data:", data)
+        # print("data.shape:", data.shape)
         # Load/convert data into a list of rows
         if isinstance(data, str):
             df = pd.read_csv(data, skiprows=skip_rows)
@@ -76,9 +79,13 @@ class SynaptrixClient:
         else:
             raise ValueError("Unsupported data type. Use a numpy array, pandas DataFrame, list of lists, or CSV file path.")
 
+        # print("data.shape:", data.shape)
         # Determine columns to process
         if data_columns is None:
             data_columns = list(range(df.shape[1]))
+
+        # print("data_columns:", data_columns)
+        # print("df:", df)
         # Remove datetime column from numeric processing, if provided.
         datetime_data = None
         if datetime_column is not None:
@@ -88,6 +95,8 @@ class SynaptrixClient:
 
         # Select the numeric data and convert to a NumPy array (float conversion)
         numeric_data = df.iloc[:, data_columns].to_numpy(dtype=float)
+
+        # print("numeric_data.shape:", numeric_data.shape)
 
         # Apply vectorized normalization if requested
         if normalize:
@@ -192,7 +201,7 @@ class SynaptrixClient:
         :param output_format: Desired output format: 'array', 'list', 'df', or 'csv'.
         :param file_name: Used if output_format='csv'.
         """
-
+        # print(data_in)
         if normalize:
             if filter:
                 print("Filtering data...")
@@ -215,29 +224,12 @@ class SynaptrixClient:
                 data_in_array, _ = self.reshape_data(data=filtered_data_in, normalize=normalize)
             else:
                 data_in_array, datetime_data = self.reshape_data(data=data_in, normalize=normalize, data_columns=data_columns, skip_rows=skip_rows, datetime_column=datetime_column)
-                
-        window_size = 512
-        num_channels, total_samples = data_in_array.shape
         
-        # Remove extra samples if needed
-        caboose = total_samples % window_size
-        if caboose:
-            data_in_array = data_in_array[:, :-caboose]
-            if datetime_data is not None:
-                datetime_data = datetime_data[:-caboose]
-        
-        # Calculate number of trials per channel
-        num_trials = data_in_array.shape[1] // window_size
-        # Format data into nested structure: [channels][trials][samples]
-        nested_data = []
-        for channel_idx in range(num_channels):
-            channel_data = data_in_array[channel_idx]
-            # Reshape into trials
-            channel_trials = channel_data.reshape(num_trials, window_size).tolist()
-            nested_data.append(channel_trials)
-        
+        # print(data_in_array.shape)
+        # print(data_in_array)
+        # is_one_dimensional = data_in
         # Compress nested_data before sending through API endpoint
-        compressed_eeg_bytestream = self.compress(nested_data)
+        compressed_eeg_bytestream = self.compress(data_in_array)
 
         try:
             # Make a single API call with the compressed bytestream
@@ -266,21 +258,10 @@ class SynaptrixClient:
         denoised_eeg_bytestream = response.content
         
         # Decompress the output from API call
-        denoised_nested = self.decompress(denoised_eeg_bytestream)
+        denoised_array = self.decompress(denoised_eeg_bytestream)
 
-        if not denoised_nested:
+        if denoised_array is None:
             raise ValueError("Received empty denoised data from the API.")
-        
-        # Reassemble the nested response back to (channels, samples)
-        denoised_channels = []
-        for channel_data in denoised_nested:
-            # Flatten trials back into a single continuous signal
-            flat_channel = np.concatenate([np.array(trial) for trial in channel_data])
-            denoised_channels.append(flat_channel.astype(np.float32))
-        
-        denoised_array = np.stack(denoised_channels, axis=0)
-        spp_consumed = int(np.shape(nested_data)[0]*np.shape(nested_data)[1]*512)
-        print(f"Denoising completed - this operation consumed {spp_consumed} SPP's.")
 
         return self.convert_output(denoised_array, num_channels = denoised_array.shape[0], datetime = datetime_data, output_format = output_format, file_name = file_name)
 
@@ -369,7 +350,8 @@ class SynaptrixClient:
             high_freq = high_freq,
             output_format="array",
         )
-                
+        # print(denoised_array)
+        # print(denoised_array.shape)
         channels, total_samples = denoised_array.shape
         
         # Create subplot for each channel
