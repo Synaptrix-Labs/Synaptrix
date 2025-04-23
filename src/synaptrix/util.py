@@ -11,7 +11,6 @@ from scipy import signal
 import zstandard as zstd
 import pickle
 
-
 class SynaptrixClient:
     def __init__(self, API_KEY: str, base_url: str = "https://neurodiffusionapi-apim.azure-api.net"):
         self.API_KEY = API_KEY
