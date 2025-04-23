@@ -255,7 +255,7 @@ class SynaptrixClient:
         if denoised_array is None:
             raise ValueError("Received empty denoised data from the API.")
         
-        spp_consumed = self.calculate_SPPs_used(reshaped_data_in)
+        spp_consumed = self.calculate_SPPs_used(denoised_array)
         print(f"Denoising completed - this operation consumed {spp_consumed} SPP's.")
 
         return self.convert_output(denoised_array, num_channels = denoised_array.shape[0], datetime = datetime_data, output_format = output_format, file_name = file_name)
