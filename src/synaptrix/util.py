@@ -11,14 +11,12 @@ from scipy import signal
 import zstandard as zstd
 import pickle
 
-
 class SynaptrixClient:
     def __init__(self, API_KEY: str, base_url: str = "https://neurodiffusionapi-apim.azure-api.net"):
         self.API_KEY = API_KEY
         self.base_url = base_url
 
     def apply_notch_filter(self, data, fs, notch_freqs=[50, 60]):
-
         filtered_data = data.copy()
         
         q_values = [30] * len(notch_freqs)
@@ -57,6 +55,7 @@ class SynaptrixClient:
         and extract a datetime column if provided.
         
         """
+
         # Load/convert data into a list of rows
         if isinstance(data, str):
             df = pd.read_csv(data, skiprows=skip_rows)
@@ -79,6 +78,7 @@ class SynaptrixClient:
         # Determine columns to process
         if data_columns is None:
             data_columns = list(range(df.shape[1]))
+
         # Remove datetime column from numeric processing, if provided.
         datetime_data = None
         if datetime_column is not None:
@@ -160,6 +160,10 @@ class SynaptrixClient:
         eeg_array = pickle.loads(eeg_bytestream)
 
         return eeg_array
+    
+    def calculate_SPPs_used(self, eeg_array):
+        SPPs_per_channel, num_channels = eeg_array.shape
+        return num_channels * SPPs_per_channel
 
     def denoise_batch(
         self,
@@ -215,29 +219,9 @@ class SynaptrixClient:
                 data_in_array, _ = self.reshape_data(data=filtered_data_in, normalize=normalize)
             else:
                 data_in_array, datetime_data = self.reshape_data(data=data_in, normalize=normalize, data_columns=data_columns, skip_rows=skip_rows, datetime_column=datetime_column)
-                
-        window_size = 512
-        num_channels, total_samples = data_in_array.shape
-        
-        # Remove extra samples if needed
-        caboose = total_samples % window_size
-        if caboose:
-            data_in_array = data_in_array[:, :-caboose]
-            if datetime_data is not None:
-                datetime_data = datetime_data[:-caboose]
-        
-        # Calculate number of trials per channel
-        num_trials = data_in_array.shape[1] // window_size
-        # Format data into nested structure: [channels][trials][samples]
-        nested_data = []
-        for channel_idx in range(num_channels):
-            channel_data = data_in_array[channel_idx]
-            # Reshape into trials
-            channel_trials = channel_data.reshape(num_trials, window_size).tolist()
-            nested_data.append(channel_trials)
         
         # Compress nested_data before sending through API endpoint
-        compressed_eeg_bytestream = self.compress(nested_data)
+        compressed_eeg_bytestream = self.compress(data_in_array)
 
         try:
             # Make a single API call with the compressed bytestream
@@ -266,20 +250,12 @@ class SynaptrixClient:
         denoised_eeg_bytestream = response.content
         
         # Decompress the output from API call
-        denoised_nested = self.decompress(denoised_eeg_bytestream)
+        denoised_array = self.decompress(denoised_eeg_bytestream)
 
-        if not denoised_nested:
+        if denoised_array is None:
             raise ValueError("Received empty denoised data from the API.")
         
-        # Reassemble the nested response back to (channels, samples)
-        denoised_channels = []
-        for channel_data in denoised_nested:
-            # Flatten trials back into a single continuous signal
-            flat_channel = np.concatenate([np.array(trial) for trial in channel_data])
-            denoised_channels.append(flat_channel.astype(np.float32))
-        
-        denoised_array = np.stack(denoised_channels, axis=0)
-        spp_consumed = int(np.shape(nested_data)[0]*np.shape(nested_data)[1]*512)
+        spp_consumed = self.calculate_SPPs_used(reshaped_data_in)
         print(f"Denoising completed - this operation consumed {spp_consumed} SPP's.")
 
         return self.convert_output(denoised_array, num_channels = denoised_array.shape[0], datetime = datetime_data, output_format = output_format, file_name = file_name)
@@ -369,7 +345,7 @@ class SynaptrixClient:
             high_freq = high_freq,
             output_format="array",
         )
-                
+
         channels, total_samples = denoised_array.shape
         
         # Create subplot for each channel
@@ -538,7 +514,7 @@ class SynaptrixClient:
             raise RuntimeError(f"Request failed: {e}")
             
         RRMSE = response.json()["rrmse"]
-        return print(f"The RRMSE of this segment is {RRMSE}")
+        return print(f"The RRMSE of this segment is {RRMSE}.")
 
     def lsl_denoise(
         self,
@@ -610,7 +586,7 @@ class SynaptrixClient:
                         high_freq=high_freq,
                         output_format = "array"
                     )
-                    print("denoised data")
+                    print("Denoised data:")
                     print(denoised_data)
                     
                     denoised_chunks.append(denoised_data)
