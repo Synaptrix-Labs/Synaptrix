@@ -28,7 +28,7 @@ class SynaptrixClient:
         
         return filtered_data
     
-    def apply_bandpass_filter(self, data, fs, low_freq=1, high_freq=100):
+    def apply_bandpass_filter(self, data, fs, low_freq=0.5, high_freq=100):
         
         filtered_data = np.zeros_like(data)
         
@@ -43,7 +43,7 @@ class SynaptrixClient:
         
         return filtered_data
         
-    def filter_data(self, data, fs, notch_freqs=[50,60], low_freq=1, high_freq=100):
+    def filter_data(self, data, fs, notch_freqs=[50,60], low_freq=0.5, high_freq=100):
         filtered_data = self.apply_notch_filter(data, fs, notch_freqs)
         filtered_data = self.apply_bandpass_filter(filtered_data, fs, low_freq, high_freq)
         
@@ -90,6 +90,8 @@ class SynaptrixClient:
         numeric_data = df.iloc[:, data_columns].to_numpy(dtype=float)
 
         # Apply vectorized normalization if requested
+        means = None
+        stds = None
         if normalize:
             means = np.mean(numeric_data, axis=0)
             stds = np.std(numeric_data, axis=0)
@@ -97,8 +99,25 @@ class SynaptrixClient:
             stds[stds == 0] = 1
             numeric_data = (numeric_data - means) / stds
 
-        # Return with shape (num_points, num_channels)
-        return numeric_data.T, datetime_data
+        # Return with shape (num_points, num_channels) and normalization parameters
+        return numeric_data.T, datetime_data, means, stds
+    
+    def strangeify(self, data, means, stds):
+        """
+        Apply un-normalization to return data to its original scale.
+        
+        :param data: Normalized data with shape (channels, samples)
+        :param means: Mean values used during normalization
+        :param stds: Standard deviation values used during normalization
+        :return: Un-normalized data in the original scale
+        """
+        if means is None or stds is None:
+            return data
+            
+        # Transpose to have channels as columns
+        data_T = data.T
+        un_normalized = data_T * stds + means
+        return un_normalized.T
     
     def convert_output(
         self,
@@ -168,14 +187,14 @@ class SynaptrixClient:
     def denoise_batch(
         self,
         data_in,
-        normalize: bool = True,
+        normalize: bool = False,
         data_columns = None,
         skip_rows: int = 0,
         datetime_column = None,
         filter: bool = True,
         sample_rate: int = 512,
         notch_freqs: list = [60],
-        low_freq: int = 1,
+        low_freq: int = 0.5,
         high_freq: int = 100,
         output_format: str = "array",
         file_name: str = "denoised_batch.csv",
@@ -184,7 +203,8 @@ class SynaptrixClient:
         Denoise a multi channel and time series as long as you want.
         
         :param data_in: array, list, df, or csv
-        :param normalize: bool, default True. If True, each channel will be normalized (z-score) before chunking.
+        :param normalize: bool, default False. If True, the output will be in normalized space.
+           If False, the output will be un-normalized back to the original scale.
         :param data_columns: an array of the indices of the columns that the user wants to denoise
         :param skip_rows: an integer equaling to the number of rows off the top of the df or csv the user wants to skip
         :param datetime_column: an integer equaling to the index of the column that contains datetime data, default None
@@ -197,28 +217,41 @@ class SynaptrixClient:
         :param file_name: Used if output_format='csv'.
         """
 
-        if normalize:
-            if filter:
-                print("Filtering data...")
+        if filter:
+            print("Filtering data...")
 
-                reshaped_data_in, datetime_data = self.reshape_data(data=data_in, normalize=False, data_columns=data_columns, skip_rows=skip_rows, datetime_column=datetime_column)
-                data_in_array = self.filter_data(reshaped_data_in, fs=sample_rate, notch_freqs=notch_freqs, low_freq=low_freq, high_freq=high_freq)
-                filtered_data_in = pd.DataFrame(data_in_array.T)
-                data_in_array, _ = self.reshape_data(data=filtered_data_in, normalize=True)
-            else:
-                data_in_array, datetime_data = self.reshape_data(data=data_in, normalize=normalize, data_columns=data_columns, skip_rows=skip_rows, datetime_column=datetime_column)
+            reshaped_data_in, datetime_data, _, _ = self.reshape_data(
+                data=data_in, 
+                normalize=False, 
+                data_columns=data_columns, 
+                skip_rows=skip_rows, 
+                datetime_column=datetime_column
+            )
+            
+            data_in_array = self.filter_data(
+                reshaped_data_in, 
+                fs=sample_rate, 
+                notch_freqs=notch_freqs, 
+                low_freq=low_freq, 
+                high_freq=high_freq
+            )
+            
+            filtered_data_in = pd.DataFrame(data_in_array.T)
+            data_in_array, _, means, stds = self.reshape_data(
+                data=filtered_data_in, 
+                normalize=True,
+                data_columns=None,
+                skip_rows=0,
+                datetime_column=None
+            )
         else:
-            print("Normalization is off.")
-
-            if filter:
-                print("Filtering data...")
-
-                reshaped_data_in, datetime_data = self.reshape_data(data=data_in, normalize=normalize, data_columns=data_columns, skip_rows=skip_rows, datetime_column=datetime_column)
-                data_in_array = self.filter_data(reshaped_data_in, fs=sample_rate, notch_freqs=notch_freqs, low_freq=low_freq, high_freq=high_freq)
-                filtered_data_in = pd.DataFrame(data_in_array.T)
-                data_in_array, _ = self.reshape_data(data=filtered_data_in, normalize=normalize)
-            else:
-                data_in_array, datetime_data = self.reshape_data(data=data_in, normalize=normalize, data_columns=data_columns, skip_rows=skip_rows, datetime_column=datetime_column)
+            data_in_array, datetime_data, means, stds = self.reshape_data(
+                data=data_in, 
+                normalize=True, 
+                data_columns=data_columns, 
+                skip_rows=skip_rows, 
+                datetime_column=datetime_column
+            )
         
         # Compress nested_data before sending through API endpoint
         compressed_eeg_bytestream = self.compress(data_in_array)
@@ -258,6 +291,10 @@ class SynaptrixClient:
         spp_consumed = self.calculate_SPPs_used(denoised_array)
         print(f"Denoising completed - this operation consumed {spp_consumed} SPP's.")
 
+        # Un-normalize the denoised data if requested
+        if not normalize:
+            denoised_array = self.strangeify(denoised_array, means, stds)
+
         return self.convert_output(denoised_array, num_channels = denoised_array.shape[0], datetime = datetime_data, output_format = output_format, file_name = file_name)
 
     sns.set_theme()
@@ -265,13 +302,13 @@ class SynaptrixClient:
     def plot_denoised(
         self,
         data_in, # shape (channels, samples)
-        normalize: bool = True,
+        normalize: bool = False,
         data_columns = None,
         skip_rows: int = 0,
         filter = True,
         sample_rate: int = 512,
         notch_freqs: list = [60],
-        low_freq: int = 1,
+        low_freq: int = 0.5,
         high_freq: int = 100,
         initial_window_sec: float = 2.0,
     ):
@@ -279,7 +316,8 @@ class SynaptrixClient:
         Create an interactive figure showing the clean and noisy time serives
 
         :param data_in: array, list, df, or csv
-        :param normalize: bool, default True. If True, each channel will be normalized (z-score) before chunking.
+        :param normalize: bool, default False. If True, both noisy and denoised data will be plotted in normalized space.
+           If False, data will be plotted in the original scale.
         :param data_columns: an array of the indices of the columns that the user wants to denoise
         :param skip_rows: an integer equaling to the number of rows off the top of the df or csv the user wants to skip
         :param filter: set this parameter to False if your input data is already filtered, default is True
@@ -290,52 +328,35 @@ class SynaptrixClient:
         :param initial_window_sec: initial view window width in seconds
         """
         
-        if normalize:
-            if filter:
-                data_in_list, _ = self.reshape_data(
-                    data = data_in,
-                    normalize=False,
-                    data_columns=data_columns,
-                    skip_rows=skip_rows,
-                )
-                prefilter_data_in_array = np.array(data_in_list)
-                data_in_array = self.filter_data(prefilter_data_in_array, fs=sample_rate, notch_freqs=notch_freqs, low_freq=low_freq, high_freq=high_freq)
-                data_in_array, _ = self.reshape_data(data=data_in_array, normalize=True)
-                                
-            else:
-                data_in_list, _ = self.reshape_data(
-                    data = data_in,
-                    normalize=normalize,
-                    data_columns=data_columns,
-                    skip_rows=skip_rows,
-                )
-                data_in_array = np.array(data_in_list)
-            
+        if filter:
+            data_in_list, _, _, _ = self.reshape_data(
+                data = data_in,
+                normalize=False,
+                data_columns=data_columns,
+                skip_rows=skip_rows,
+            )
+            prefilter_data_in_array = np.array(data_in_list)
+            data_in_array = self.filter_data(prefilter_data_in_array, fs=sample_rate, notch_freqs=notch_freqs, low_freq=low_freq, high_freq=high_freq)
+            filtered_data_in = pd.DataFrame(data_in_array.T)
+            data_in_array, _, means, stds = self.reshape_data(
+                data=filtered_data_in, 
+                normalize=True,
+                data_columns=None,
+                skip_rows=0,
+                datetime_column=None
+            )
         else:
-            print("Normalization is off.")
-            if filter:
-                data_in_list, _ = self.reshape_data(
-                    data = data_in,
-                    normalize=normalize,
-                    data_columns=data_columns,
-                    skip_rows=skip_rows,
-                )
-                prefilter_data_in_array = np.array(data_in_list)
-                data_in_array = self.filter_data(prefilter_data_in_array, fs=sample_rate, notch_freqs=notch_freqs, low_freq=low_freq, high_freq=high_freq)
-                data_in_array, _ = self.reshape_data(data=data_in_array, normalize=False)
-                                
-            else:
-                data_in_list, _ = self.reshape_data(
-                    data = data_in,
-                    normalize=normalize,
-                    data_columns=data_columns,
-                    skip_rows=skip_rows,
-                )
-                data_in_array = np.array(data_in_list)
+            data_in_list, _, means, stds = self.reshape_data(
+                data = data_in,
+                normalize=True,
+                data_columns=data_columns,
+                skip_rows=skip_rows,
+            )
+            data_in_array = np.array(data_in_list)
                 
         denoised_array = self.denoise_batch(
             data_in=data_in,
-            normalize=normalize,
+            normalize=True,  # Always get normalized output from denoise_batch
             data_columns=data_columns,
             skip_rows=skip_rows,
             filter = filter,
@@ -345,6 +366,11 @@ class SynaptrixClient:
             high_freq = high_freq,
             output_format="array",
         )
+
+        # Un-normalize both arrays if requested for plotting
+        if not normalize:
+            data_in_array = self.strangeify(data_in_array, means, stds)
+            denoised_array = self.strangeify(denoised_array, means, stds)
 
         channels, total_samples = denoised_array.shape
         
@@ -518,13 +544,13 @@ class SynaptrixClient:
 
     def lsl_denoise(
         self,
-        normalize: bool=True,
+        normalize: bool=False,
         stream_duration = 0,
         num_channels = 4,
         sample_rate = 512,
         filter = True,
         notch_freqs=[50,60],
-        low_freq: int = 1,
+        low_freq: int = 0.5,
         high_freq: int = 100,
         output_format = "array",
         file_name = "denoised_lsl.csv"
@@ -532,7 +558,7 @@ class SynaptrixClient:
         """
         Use LSL to stream live data from eeg device into denoising endpoint
         
-        :param normalize: bool, default True. If True, each channel will be normalized (z-score) before chunking.
+        :param normalize: bool, default False. If False, the output will be un-normalized back to the original scale.
         :param stream_duration: How long the stream lasts in seconds, 0 means indefinite
         :num_channels: how many channels in the data
         :sample_rate: how many data points per second the eeg device outputs, for optimal results match the batch size of 512
@@ -548,6 +574,9 @@ class SynaptrixClient:
         batch_size = 512
         buffer_list = []
         denoised_chunks = []
+        means_list = []
+        stds_list = []
+        
         print("Resolving LSL stream...")
         streams = resolve_streams()
         inlet = StreamInlet(streams[0])
@@ -575,10 +604,16 @@ class SynaptrixClient:
                     data_in = np.array(data_512, dtype=np.float32).T
                     print(f"Collected 512 samples => shape {np.shape(data_in)}. Ready to process.")
                     
-                    # Pass into denoise_batch
+                    # Normalize data before denoising
+                    df = pd.DataFrame(data_in.T)
+                    data_normalized, _, means, stds = self.reshape_data(data=df, normalize=True)
+                    means_list.append(means)
+                    stds_list.append(stds)
+                    
+                    # Pass into denoise_batch (always get normalized results from API)
                     denoised_data = self.denoise_batch(
-                        data_in=data_in,
-                        normalize=normalize,
+                        data_in=data_normalized,
+                        normalize=True,
                         filter=filter,
                         sample_rate=sample_rate,
                         notch_freqs=notch_freqs,
@@ -586,6 +621,11 @@ class SynaptrixClient:
                         high_freq=high_freq,
                         output_format = "array"
                     )
+                    
+                    # Un-normalize if requested
+                    if not normalize:
+                        denoised_data = self.strangeify(denoised_data, means, stds)
+                    
                     print("Denoised data:")
                     print(denoised_data)
                     
