@@ -77,7 +77,7 @@ After installing the native LSL libraries for your platform, you can install Syn
 
 After initializing the client, you can then access all the functions of synaptrix.
 
-Our model works best with filtered and normalized data. If your data is not preprocessed don't worry! The library will apply a notch filter at 50 and 60hz (powerline), a bandpass filter from 1-100hz, and normalize your data by default.
+Our model works best with filtered and normalized data. If your data is not preprocessed don't worry! The library will apply a notch filter at 50 and 60hz (powerline), a bandpass filter from 1-100hz, and normalize your data by default. By setting the parameter "Normalize" to False, we will return the denoised data in your original scaling.
 
 Here is an example of how you can denoise a csv file called data.csv. Let's say the columns you want to denoise has indices [1,2,5,7], you want to skip the first 2 rows of data because they contain header data, the column with index 0 contains datetime data, your data is at 512hz, and you want to output a df:
     
@@ -94,7 +94,7 @@ Here is an example of how you can denoise a csv file called data.csv. Let's say 
     
     print("Denoised Data: ", denoised)
 ```
-Now let's say you have a dataset that is already filtered and normalized. Set the filter and normalize parameters to False first. Now let's say you want to denoise columns with indices [4,6,7], you want to skip no rows of data, the datetime column has index 3, and you want to output a csv called "denoised_data.csv":
+Now let's say you have a dataset that is already filtered. Set the filter parameter to False first. Now let's say you want to denoise columns with indices [4,6,7], you want to skip no rows of data, the datetime column has index 3, and you want to output a csv called "denoised_data.csv":
     
 ```python
     data_in = pd.read_csv("data.csv")

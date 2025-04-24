@@ -212,7 +212,7 @@ class SynaptrixClient:
         :param sample_rate: an integer equaling to the sample rate of your data
         :param notch_freqs: a list of integers equaling to which hz you want to apply a notch filter
         :param low_freq: an integer equaling to the lower bound of the bandpass filter
-        :param high_freq: an integer equaling to the higher bound of teh bandpass filter
+        :param high_freq: an integer equaling to the higher bound of the bandpass filter
         :param output_format: Desired output format: 'array', 'list', 'df', or 'csv'.
         :param file_name: Used if output_format='csv'.
         """
@@ -324,7 +324,7 @@ class SynaptrixClient:
         :param sample_rate: an integer equaling to the sample rate of your data
         :param notch_freqs: a list of integers equaling to which hz you want to apply a notch filter
         :param low_freq: an integer equaling to the lower bound of the bandpass filter
-        :param high_freq: an integer equaling to the higher bound of teh bandpass filter
+        :param high_freq: an integer equaling to the higher bound of the bandpass filter
         :param initial_window_sec: initial view window width in seconds
         """
         
@@ -566,7 +566,7 @@ class SynaptrixClient:
         :param sample_rate: an integer equaling to the sample rate of your data
         :param notch_freqs: a list of integers equaling to which hz you want to apply a notch filter
         :param low_freq: an integer equaling to the lower bound of the bandpass filter
-        :param high_freq: an integer equaling to the higher bound of teh bandpass filter
+        :param high_freq: an integer equaling to the higher bound of the bandpass filter
         :param output_format: Desired output format: 'array', 'list', 'df', or 'csv'.
         :param file_name: Used if output_format='csv'.
         """
