@@ -1,5 +1,6 @@
 import time
 import math
+from collections import deque
 import numpy as np
 import requests
 import pandas as pd
@@ -15,35 +16,37 @@ class SynaptrixClient:
     def __init__(self, API_KEY: str, base_url: str = "https://neurodiffusionapi-apim.azure-api.net"):
         self.API_KEY = API_KEY
         self.base_url = base_url
+        self._compressor = zstd.ZstdCompressor(level=3)
+        self._decompressor = zstd.ZstdDecompressor()
+        self._session = requests.Session()
+        self._session.headers.update({"x-api-key": self.API_KEY})
 
     def apply_notch_filter(self, data, fs, notch_freqs=[50, 60]):
-        filtered_data = data.copy()
-        
-        q_values = [30] * len(notch_freqs)
-        for freq, q in zip(notch_freqs, q_values):
+        """
+        Apply sequential notch filters to every channel at once (axis=1).
+        """
+        filtered = np.asarray(data).copy()
+        q = 30
+        for freq in notch_freqs:
             b, a = signal.iirnotch(freq, q, fs)
-            # Apply the filter to each channel
-            for i in range(data.shape[0]):
-                filtered_data[i] = signal.filtfilt(b, a, data[i])
-        
-        return filtered_data
+            filtered = signal.filtfilt(b, a, filtered, axis=1)
+
+        return filtered
     
-    def apply_bandpass_filter(self, data, fs, low_freq=0.5, high_freq=100):
-        
-        filtered_data = np.zeros_like(data)
-        
+    def apply_bandpass_filter(self, data, fs, low_freq=0.5, high_freq=40):
+        """
+        Apply a Butterworth band-pass to all channels using SOS form for stability.
+        """
+        data_arr = np.asarray(data, dtype=float)
+
         nyq = 0.5 * fs
         low = low_freq / nyq
         high = high_freq / nyq
+
+        sos = signal.butter(4, [low, high], btype='band', output='sos')
+        return signal.sosfiltfilt(sos, data_arr, axis=1)
         
-        b, a = signal.butter(4, [low, high], btype='band')        
-        # Apply the filter to each channel
-        for i in range(data.shape[0]):
-            filtered_data[i] = signal.filtfilt(b, a, data[i])
-        
-        return filtered_data
-        
-    def filter_data(self, data, fs, notch_freqs=[50,60], low_freq=0.5, high_freq=100):
+    def filter_data(self, data, fs, notch_freqs=[50,60], low_freq=0.5, high_freq=40):
         filtered_data = self.apply_notch_filter(data, fs, notch_freqs)
         filtered_data = self.apply_bandpass_filter(filtered_data, fs, low_freq, high_freq)
         
@@ -56,50 +59,46 @@ class SynaptrixClient:
         
         """
 
-        # Load/convert data into a list of rows
+        # Load/convert the data so rows = samples and columns = channels
         if isinstance(data, str):
             df = pd.read_csv(data, skiprows=skip_rows)
-            
+            base_array = df.to_numpy()
         elif isinstance(data, pd.DataFrame):
             df = data.iloc[skip_rows:] if skip_rows else data
-            
-        elif isinstance(data, np.ndarray):
-            df = pd.DataFrame(data.T)
-            if skip_rows:
-                df = df.iloc[skip_rows:]
-                
-        elif isinstance(data, list):
-            data_rotated = list(map(list, zip(*data)))
-            df = pd.DataFrame(data_rotated[skip_rows:])
-            
+            base_array = df.to_numpy()
         else:
-            raise ValueError("Unsupported data type. Use a numpy array, pandas DataFrame, list of lists, or CSV file path.")
+            base_array = np.asarray(data)
+            if base_array.ndim == 1:
+                base_array = base_array[:, None]
+            # Incoming arrays/lists are assumed channel-first; match historical behavior.
+            base_array = base_array.T
+            if skip_rows:
+                base_array = base_array[skip_rows:]
 
-        # Determine columns to process
-        if data_columns is None:
-            data_columns = list(range(df.shape[1]))
+        if base_array.size == 0:
+            raise ValueError("Input data is empty after processing.")
 
-        # Remove datetime column from numeric processing, if provided.
+        n_cols = base_array.shape[1]
+        numeric_cols = list(range(n_cols)) if data_columns is None else list(data_columns)
+
         datetime_data = None
         if datetime_column is not None:
-            datetime_data = df.iloc[:, datetime_column].values
-            if datetime_column in data_columns:
-                data_columns.remove(datetime_column)
+            datetime_data = base_array[:, datetime_column]
+            numeric_cols = [idx for idx in numeric_cols if idx != datetime_column]
 
-        # Select the numeric data and convert to a NumPy array (float conversion)
-        numeric_data = df.iloc[:, data_columns].to_numpy(dtype=float)
+        if not numeric_cols:
+            raise ValueError("No numeric columns available for processing.")
 
-        # Apply vectorized normalization if requested
+        numeric_data = base_array[:, numeric_cols].astype(float, copy=False)
+
         means = None
         stds = None
         if normalize:
             means = np.mean(numeric_data, axis=0)
             stds = np.std(numeric_data, axis=0)
-            # Avoid division by zero
             stds[stds == 0] = 1
             numeric_data = (numeric_data - means) / stds
 
-        # Return with shape (num_points, num_channels) and normalization parameters
         return numeric_data.T, datetime_data, means, stds
     
     def strangeify(self, data, means, stds):
@@ -166,16 +165,14 @@ class SynaptrixClient:
 
     def compress(self, eeg_array):
         """Internal helper function to compress an EEG NumPy array using Zstandard and return the corresponding byte stream"""
-        compressor = zstd.ZstdCompressor(level=3)
         eeg_bytestream = pickle.dumps(eeg_array)
-        compressed_eeg_bytestream = compressor.compress(eeg_bytestream)
+        compressed_eeg_bytestream = self._compressor.compress(eeg_bytestream)
 
         return compressed_eeg_bytestream
 
     def decompress(self, compressed_eeg_bytestream):
         """Internal helper function to decompress a byte stream using Zstandard and return the corresponding EEG NumPy array"""
-        decompressor = zstd.ZstdDecompressor()
-        eeg_bytestream = decompressor.decompress(compressed_eeg_bytestream)
+        eeg_bytestream = self._decompressor.decompress(compressed_eeg_bytestream)
         eeg_array = pickle.loads(eeg_bytestream)
 
         return eeg_array
@@ -183,6 +180,82 @@ class SynaptrixClient:
     def calculate_SPPs_used(self, eeg_array):
         SPPs_per_channel, num_channels = eeg_array.shape
         return num_channels * SPPs_per_channel
+
+    def _normalize_channels(self, channel_first_array):
+        """
+        Normalize each channel of a (channels, samples) array.
+        """
+        means = np.mean(channel_first_array, axis=1, keepdims=True)
+        stds = np.std(channel_first_array, axis=1, keepdims=True)
+        stds[stds == 0] = 1
+        normalized = (channel_first_array - means) / stds
+        return normalized, means.ravel(), stds.ravel()
+
+    def mise_en_place(
+        self,
+        data_in,
+        data_columns,
+        skip_rows,
+        datetime_column,
+        filter,
+        sample_rate,
+        notch_freqs,
+        low_freq,
+        high_freq,
+    ):
+        """
+        Shared preprocessing pipeline used by denoise_batch and plot_denoised.
+        """
+        channel_array, datetime_data, _, _ = self.reshape_data(
+            data=data_in,
+            normalize=False,
+            data_columns=data_columns,
+            skip_rows=skip_rows,
+            datetime_column=datetime_column,
+        )
+
+        channel_array = np.asarray(channel_array, dtype=float)
+
+        if filter:
+            channel_array = self.filter_data(
+                channel_array,
+                fs=sample_rate,
+                notch_freqs=notch_freqs,
+                low_freq=low_freq,
+                high_freq=high_freq,
+            )
+
+        normalized_array, means, stds = self._normalize_channels(channel_array)
+
+        return normalized_array, channel_array, datetime_data, means, stds
+
+    def _run_batch_denoise(self, normalized_array):
+        compressed_eeg_bytestream = self.compress(normalized_array)
+
+        try:
+            print("Denoising data...")
+            response = self._session.post(
+                f"{self.base_url}/batch-denoise",
+                headers={"Content-Type": "application/octet-stream"},
+                data=compressed_eeg_bytestream,
+            )
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            try:
+                error_details = response.json()
+                error_message = f"Request failed: {e}. Details: {error_details}"
+            except Exception:
+                error_message = f"Request failed: {e}"
+            raise RuntimeError(error_message)
+
+        denoised_array = self.decompress(response.content)
+        if denoised_array is None:
+            raise ValueError("Received empty denoised data from the API.")
+
+        spp_consumed = self.calculate_SPPs_used(denoised_array)
+        print(f"Denoising completed - this operation consumed {spp_consumed} SPP's.")
+
+        return denoised_array
 
     def denoise_batch(
         self,
@@ -195,7 +268,7 @@ class SynaptrixClient:
         sample_rate: int = 512,
         notch_freqs: list = [60],
         low_freq: int = 0.5,
-        high_freq: int = 100,
+        high_freq: int = 40,
         output_format: str = "array",
         file_name: str = "denoised_batch.csv",
     ):
@@ -217,81 +290,20 @@ class SynaptrixClient:
         :param file_name: Used if output_format='csv'.
         """
 
-        if filter:
-            print("Filtering data...")
+        normalized_array, _, datetime_data, means, stds = self.mise_en_place(
+            data_in=data_in,
+            data_columns=data_columns,
+            skip_rows=skip_rows,
+            datetime_column=datetime_column,
+            filter=filter,
+            sample_rate=sample_rate,
+            notch_freqs=notch_freqs,
+            low_freq=low_freq,
+            high_freq=high_freq,
+        )
 
-            reshaped_data_in, datetime_data, _, _ = self.reshape_data(
-                data=data_in, 
-                normalize=False, 
-                data_columns=data_columns, 
-                skip_rows=skip_rows, 
-                datetime_column=datetime_column
-            )
-            
-            data_in_array = self.filter_data(
-                reshaped_data_in, 
-                fs=sample_rate, 
-                notch_freqs=notch_freqs, 
-                low_freq=low_freq, 
-                high_freq=high_freq
-            )
-            
-            filtered_data_in = pd.DataFrame(data_in_array.T)
-            data_in_array, _, means, stds = self.reshape_data(
-                data=filtered_data_in, 
-                normalize=True,
-                data_columns=None,
-                skip_rows=0,
-                datetime_column=None
-            )
-        else:
-            data_in_array, datetime_data, means, stds = self.reshape_data(
-                data=data_in, 
-                normalize=True, 
-                data_columns=data_columns, 
-                skip_rows=skip_rows, 
-                datetime_column=datetime_column
-            )
-        
-        # Compress nested_data before sending through API endpoint
-        compressed_eeg_bytestream = self.compress(data_in_array)
+        denoised_array = self._run_batch_denoise(normalized_array)
 
-        try:
-            # Make a single API call with the compressed bytestream
-            print("Denoising data...")
-            
-            response = requests.post(
-                f"{self.base_url}/batch-denoise",
-                headers={
-                    "x-api-key": self.API_KEY,
-                    "Content-Type": "application/octet-stream"
-                },
-                data=compressed_eeg_bytestream
-            )
-            response.raise_for_status()
-
-        except requests.exceptions.RequestException as e:
-            # Add more detailed error info
-            try:
-                error_details = response.json()
-                error_message = f"Request failed: {e}. Details: {error_details}"
-            except:
-                error_message = f"Request failed: {e}"
-            raise RuntimeError(error_message)
-
-        # Process the response
-        denoised_eeg_bytestream = response.content
-        
-        # Decompress the output from API call
-        denoised_array = self.decompress(denoised_eeg_bytestream)
-
-        if denoised_array is None:
-            raise ValueError("Received empty denoised data from the API.")
-        
-        spp_consumed = self.calculate_SPPs_used(denoised_array)
-        print(f"Denoising completed - this operation consumed {spp_consumed} SPP's.")
-
-        # Un-normalize the denoised data if requested
         if not normalize:
             denoised_array = self.strangeify(denoised_array, means, stds)
 
@@ -309,7 +321,7 @@ class SynaptrixClient:
         sample_rate: int = 512,
         notch_freqs: list = [60],
         low_freq: int = 0.5,
-        high_freq: int = 100,
+        high_freq: int = 40,
         initial_window_sec: float = 2.0,
     ):
         """
@@ -328,48 +340,24 @@ class SynaptrixClient:
         :param initial_window_sec: initial view window width in seconds
         """
         
-        if filter:
-            data_in_list, _, _, _ = self.reshape_data(
-                data = data_in,
-                normalize=False,
-                data_columns=data_columns,
-                skip_rows=skip_rows,
-            )
-            prefilter_data_in_array = np.array(data_in_list)
-            data_in_array = self.filter_data(prefilter_data_in_array, fs=sample_rate, notch_freqs=notch_freqs, low_freq=low_freq, high_freq=high_freq)
-            filtered_data_in = pd.DataFrame(data_in_array.T)
-            data_in_array, _, means, stds = self.reshape_data(
-                data=filtered_data_in, 
-                normalize=True,
-                data_columns=None,
-                skip_rows=0,
-                datetime_column=None
-            )
-        else:
-            data_in_list, _, means, stds = self.reshape_data(
-                data = data_in,
-                normalize=True,
-                data_columns=data_columns,
-                skip_rows=skip_rows,
-            )
-            data_in_array = np.array(data_in_list)
-                
-        denoised_array = self.denoise_batch(
+        normalized_array, noisy_array, _, means, stds = self.mise_en_place(
             data_in=data_in,
-            normalize=True,  # Always get normalized output from denoise_batch
             data_columns=data_columns,
             skip_rows=skip_rows,
-            filter = filter,
-            sample_rate = sample_rate,
-            notch_freqs = notch_freqs,
-            low_freq = low_freq,
-            high_freq = high_freq,
-            output_format="array",
+            datetime_column=None,
+            filter=filter,
+            sample_rate=sample_rate,
+            notch_freqs=notch_freqs,
+            low_freq=low_freq,
+            high_freq=high_freq,
         )
 
-        # Un-normalize both arrays if requested for plotting
-        if not normalize:
-            data_in_array = self.strangeify(data_in_array, means, stds)
+        denoised_array = self._run_batch_denoise(normalized_array)
+
+        if normalize:
+            data_in_array = normalized_array
+        else:
+            data_in_array = noisy_array
             denoised_array = self.strangeify(denoised_array, means, stds)
 
         channels, total_samples = denoised_array.shape
@@ -388,6 +376,18 @@ class SynaptrixClient:
         window_samples = min(window_samples, total_samples)
 
         end_idx = start_idx + window_samples
+
+        def _set_channel_ylim(axis, den_segment, noisy_segment):
+            data_min = np.min(den_segment)
+            data_max = np.max(den_segment)
+            if noisy_segment.size:
+                data_min = min(data_min, np.min(noisy_segment))
+                data_max = max(data_max, np.max(noisy_segment))
+            if data_min == data_max:
+                data_min -= 1
+                data_max += 1
+            pad = 0.05 * (data_max - data_min)
+            axis.set_ylim(data_min - pad, data_max + pad)
 
         # Plot lines for each channel
         denoised_lines = []
@@ -410,6 +410,8 @@ class SynaptrixClient:
                 color="C1", lw=1.0, label="Noisy"
             )
             noisy_lines.append(noisy_line)
+
+            _set_channel_ylim(ax, denoised_array[ch, start_idx:end_idx], data_in_array[ch, start_idx:end_idx])
 
             ax.set_ylabel(f"Channel {ch+1}")
 
@@ -439,6 +441,12 @@ class SynaptrixClient:
                 # Noisy
                 noisy_lines[ch].set_xdata(time[start_idx:end_idx])
                 noisy_lines[ch].set_ydata(data_in_array[ch, start_idx:end_idx])
+
+                _set_channel_ylim(
+                    axes[ch],
+                    denoised_array[ch, start_idx:end_idx],
+                    data_in_array[ch, start_idx:end_idx],
+                )
 
             if end_idx > 0:
                 axes[-1].set_xlim(time[start_idx], time[end_idx-1])
@@ -524,12 +532,9 @@ class SynaptrixClient:
             eeg_segment_list = eeg_segment
         
         try:
-            response = requests.post(
+            response = self._session.post(
                 f"{self.base_url}/denoise-rrmse",
-                headers={
-                    "x-api-key": self.API_KEY,
-                    "Content-Type": "application/json"
-                },
+                headers={"Content-Type": "application/json"},
                 json={
                     "noisy_eeg": eeg_segment_list
                 }
@@ -546,12 +551,12 @@ class SynaptrixClient:
         self,
         normalize: bool=False,
         stream_duration = 0,
-        num_channels = 4,
+        num_channels = None,
         sample_rate = 512,
         filter = True,
         notch_freqs=[50,60],
         low_freq: int = 0.5,
-        high_freq: int = 100,
+        high_freq: int = 40,
         output_format = "array",
         file_name = "denoised_lsl.csv"
     ):
@@ -560,8 +565,11 @@ class SynaptrixClient:
         
         :param normalize: bool, default False. If False, the output will be un-normalized back to the original scale.
         :param stream_duration: How long the stream lasts in seconds, 0 means indefinite
-        :num_channels: how many channels in the data
-        :sample_rate: how many data points per second the eeg device outputs, for optimal results match the batch size of 512
+        :param num_channels:
+            - None: use all channels from the LSL stream.
+            - int: use the first `num_channels` channels.
+            - list/tuple of int: indices of LSL channels to process (0-based).        
+        :param sample_rate: how many data points per second the eeg device outputs, for optimal results match the batch size of 512
         :param filter: set this parameter to False if your input data is already filtered, default is True
         :param sample_rate: an integer equaling to the sample rate of your data
         :param notch_freqs: a list of integers equaling to which hz you want to apply a notch filter
@@ -571,15 +579,35 @@ class SynaptrixClient:
         :param file_name: Used if output_format='csv'.
         """
         
-        batch_size = 512
-        buffer_list = []
+        batch_size = sample_rate
+        buffer = deque()
         denoised_chunks = []
-        means_list = []
-        stds_list = []
         
         print("Resolving LSL stream...")
         streams = resolve_streams()
         inlet = StreamInlet(streams[0])
+        info = inlet.info()
+        stream_n_channels = info.channel_count()
+
+
+        if num_channels is None:
+            channel_indices = list(range(stream_n_channels))
+        elif isinstance(num_channels, int):
+            channel_indices = list(range(min(num_channels, stream_n_channels)))
+        else:
+            channel_indices = list(num_channels)
+
+        if len(channel_indices) == 0:
+            raise ValueError("No channel indices specified.")
+        if max(channel_indices) >= stream_n_channels or min(channel_indices) < 0:
+            raise ValueError(
+                f"Channel indices {channel_indices} out of range for LSL stream "
+                f"with {stream_n_channels} channels."
+            )
+        print(f"Using channels (0-based indices): {channel_indices}")
+        effective_n_channels = len(channel_indices)
+
+
         period = math.ceil(batch_size / sample_rate)
         print(f"period is: {period}")
         print("Starting LSL stream. Press Ctrl+C to stop (if stream_duration=0).")
@@ -594,33 +622,26 @@ class SynaptrixClient:
                         
                 while (time.time() - start_time) < period:
                     chunk, timestamps = inlet.pull_chunk(timeout=0.2)
-                    if timestamps:
-                        buffer_list.extend(chunk)
+                    if timestamps and chunk:
+                        buffer.extend(chunk)
                         
-                if len(buffer_list) >= batch_size:
-                    data_512 = buffer_list[:batch_size]
-                    buffer_list = buffer_list[batch_size:]
+                if len(buffer) >= batch_size:
+                    data_all = [buffer.popleft() for _ in range(batch_size)]
+                    data_full = np.array(data_all, dtype=np.float32).T
+                    data_in = data_full[channel_indices, :]
+                    print(f"Collected {sample_rate} samples => shape {np.shape(data_in)}. Ready to process.")
                     
-                    data_in = np.array(data_512, dtype=np.float32).T
-                    print(f"Collected 512 samples => shape {np.shape(data_in)}. Ready to process.")
+                    if filter:
+                        data_in = self.filter_data(
+                            data_in,
+                            fs=sample_rate,
+                            notch_freqs=notch_freqs,
+                            low_freq=low_freq,
+                            high_freq=high_freq,
+                        )
                     
-                    # Normalize data before denoising
-                    df = pd.DataFrame(data_in.T)
-                    data_normalized, _, means, stds = self.reshape_data(data=df, normalize=True)
-                    means_list.append(means)
-                    stds_list.append(stds)
-                    
-                    # Pass into denoise_batch (always get normalized results from API)
-                    denoised_data = self.denoise_batch(
-                        data_in=data_normalized,
-                        normalize=True,
-                        filter=filter,
-                        sample_rate=sample_rate,
-                        notch_freqs=notch_freqs,
-                        low_freq=low_freq,
-                        high_freq=high_freq,
-                        output_format = "array"
-                    )
+                    normalized_chunk, means, stds = self._normalize_channels(data_in)
+                    denoised_data = self._run_batch_denoise(normalized_chunk)
                     
                     # Un-normalize if requested
                     if not normalize:
@@ -638,15 +659,13 @@ class SynaptrixClient:
         
         if len(denoised_chunks) == 0:
             print("No data was collected or denoised.")
-            final_array = np.zeros((num_channels, 0), dtype=np.float32)
+            final_array = np.zeros((effective_n_channels, 0), dtype=np.float32)
         else:
             final_array = np.concatenate(denoised_chunks, axis=1)
 
         print("Final shape:", final_array.shape)
-        total_spp = int(final_array.shape[0]* (final_array.shape[1]/512)*512)
+        total_spp = int(final_array.shape[0]* (final_array.shape[1]/batch_size)*batch_size)
 
         # Convert to requested format
         print(f"This LSL stream consumed {total_spp} SPP's")
-        return self.convert_output(final_array, num_channels = num_channels, output_format=output_format, file_name = file_name)
-
-
+        return self.convert_output(final_array, num_channels = effective_n_channels, output_format=output_format, file_name = file_name)
